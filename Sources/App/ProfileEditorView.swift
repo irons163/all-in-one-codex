@@ -20,16 +20,84 @@ struct ProfileEditorView: View {
                     }
                 }
 
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    TextField("Model", text: $draft.model)
+                        .textFieldStyle(.roundedBorder)
+                        .help(route.explanation)
+
+                    Menu {
+                        ForEach(appState.modelOptions(for: draft.presetKey)) { option in
+                            Button {
+                                draft.model = option.modelID
+                            } label: {
+                                HStack {
+                                    Image(
+                                        systemName: option.isChatOnly
+                                            ? "arrow.left.arrow.right"
+                                            : "arrow.right"
+                                    )
+                                    Text(option.modelID)
+                                    Spacer()
+                                    Text(option.transport.label)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
+                        if appState.allowsCustomModels(for: draft.presetKey) {
+                            Divider()
+                            Text("OpenRouter 允許直接輸入自訂 model ID")
+                        }
+                    } label: {
+                        Label("選擇 model", systemImage: "chevron.up.chevron.down")
+                    }
+                    .fixedSize()
+                    .help("從 preset 的 model catalog 選擇；仍可直接輸入文字。")
+                }
+
+                LabeledContent("Route") {
+                    Text(route.routeName)
+                        .foregroundStyle(route.isKnown ? Color.primary : Color.orange)
+                        .multilineTextAlignment(.trailing)
+                }
+
                 LabeledContent("Endpoint") {
-                    Text(appState.endpoint(for: draft.presetKey))
+                    Text(route.endpoint)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .multilineTextAlignment(.trailing)
                 }
 
-                TextField("Model", text: $draft.model)
-                    .textFieldStyle(.roundedBorder)
-                    .help("OpenCode Go MVP 僅支援原生 Responses model。")
+                if let loopbackEndpoint = route.loopbackEndpoint {
+                    LabeledContent("Loopback") {
+                        Text(loopbackEndpoint)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+
+                if let upstreamEndpoint = route.upstreamEndpoint {
+                    LabeledContent("Upstream") {
+                        Text(upstreamEndpoint)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+
+                Text(route.explanation)
+                    .font(.caption)
+                    .foregroundStyle(route.bridgeEnabled ? Color.orange : Color.secondary)
+
+                if !route.isKnown {
+                    Label(
+                        "Core 會拒絕這個 model；請從清單選擇支援項目或修正輸入。",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
             }
 
             Section("Credentials") {
@@ -87,7 +155,7 @@ struct ProfileEditorView: View {
         .formStyle(.grouped)
         .navigationTitle(isNew ? "New Profile" : (draft.name.isEmpty ? "Profile" : draft.name))
         .onChange(of: draft.presetKey) { oldKey, newKey in
-            if draft.model.isEmpty || draft.model == appState.defaultModel(for: oldKey) {
+            if draft.model.isEmpty || appState.isDefaultModel(draft.model, for: oldKey) {
                 draft.model = appState.defaultModel(for: newKey)
             }
         }
@@ -102,6 +170,13 @@ struct ProfileEditorView: View {
                     .background(.bar)
             }
         }
+    }
+
+    private var route: AppState.RoutePresentation {
+        appState.routePresentation(
+            for: draft.presetKey,
+            model: draft.model
+        )
     }
 }
 
@@ -120,10 +195,28 @@ private struct PreviewSection: View {
             LabeledContent("Provider") {
                 Text(preview.providerName)
             }
+            LabeledContent("Route") {
+                Text(preview.routeName)
+                    .foregroundStyle(preview.bridgeEnabled ? Color.orange : Color.secondary)
+            }
             LabeledContent("Endpoint") {
                 Text(preview.endpoint)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+            }
+            if let loopbackEndpoint = preview.loopbackEndpoint {
+                LabeledContent("Loopback") {
+                    Text(loopbackEndpoint)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            if let upstreamEndpoint = preview.upstreamEndpoint {
+                LabeledContent("Upstream") {
+                    Text(upstreamEndpoint)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
             LabeledContent("Model") {
                 Text(preview.model)

@@ -20,6 +20,14 @@ struct MenuBarView: View {
                                 Text(item.name)
                                 Text(item.providerName)
                                     .foregroundStyle(.secondary)
+                                if item.requiresLoopbackBridge {
+                                    Label(
+                                        "需要本機 bridge",
+                                        systemImage: "arrow.left.arrow.right"
+                                    )
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                }
                             }
                         }
                     }

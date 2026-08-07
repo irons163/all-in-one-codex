@@ -27,9 +27,15 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
 
 /// UI-facing operations supported by a client integration.
 public protocol ClientAdapter {
+    func prepareForUse() throws
     func preview(profile: ProviderProfile) throws -> SwitchPreview
     func apply(profile: ProviderProfile) throws -> SwitchReceipt
     func undo(_ receipt: SwitchReceipt) throws
+}
+
+/// Adapters without a local service have no launch preparation to perform.
+public extension ClientAdapter {
+    func prepareForUse() throws {}
 }
 
 /// Codex-specific implementation that projects and atomically switches `~/.codex/config.toml`.
@@ -43,15 +49,29 @@ public struct CodexClientAdapter: ClientAdapter {
     public let configURL: URL
     private let credentialStore: any CredentialStoring
     private let projector: CodexConfigProjector
+    private let bridgeManager: any OpenCodeGoBridgeManaging
 
     public init(
         configURL: URL = CodexClientAdapter.defaultConfigURL,
         credentialStore: any CredentialStoring = KeychainCredentialStore(),
-        projector: CodexConfigProjector = CodexConfigProjector()
+        projector: CodexConfigProjector = CodexConfigProjector(),
+        bridgeManager: any OpenCodeGoBridgeManaging = OpenCodeGoBridgeManager.shared
     ) {
         self.configURL = configURL
         self.credentialStore = credentialStore
         self.projector = projector
+        self.bridgeManager = bridgeManager
+    }
+
+    /// Starts the loopback bridge only when the active existing configuration
+    /// points Codex at the bridge provider. This prevents an OpenRouter-only
+    /// installation from claiming the bridge port during launch.
+    public func prepareForUse() throws {
+        let snapshot = try readConfiguration()
+        guard Self.activeModelProvider(in: snapshot.text) == ProviderCatalog.openCodeGoBridgeProviderID else {
+            return
+        }
+        try bridgeManager.ensureRunning()
     }
 
     public func preview(profile: ProviderProfile) throws -> SwitchPreview {
@@ -68,6 +88,11 @@ public struct CodexClientAdapter: ClientAdapter {
 
     public func apply(profile: ProviderProfile) throws -> SwitchReceipt {
         try requireCredential(for: profile.id)
+        let route = try ProviderCatalog.route(for: profile)
+        if route.requiresLoopbackBridge {
+            // The listener must be available before Codex is pointed at it.
+            try bridgeManager.ensureRunning()
+        }
 
         let snapshot = try readConfiguration()
         let projected = try projector.project(original: snapshot.text, profile: profile)
@@ -259,6 +284,126 @@ public struct CodexClientAdapter: ClientAdapter {
         SHA256.hash(data: data)
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    private static func activeModelProvider(in configuration: String) -> String? {
+        var multilineDelimiter: String?
+
+        for rawLine in configuration.split(separator: "\n", omittingEmptySubsequences: false) {
+            var line = String(rawLine)
+            if line.last == "\r" {
+                line.removeLast()
+            }
+
+            if let activeDelimiter = multilineDelimiter {
+                if line.contains(activeDelimiter) {
+                    multilineDelimiter = nil
+                }
+                continue
+            }
+
+            if let delimiter = multilineDelimiterOpened(in: line) {
+                multilineDelimiter = delimiter
+                continue
+            }
+
+            let code = codeBeforeComment(in: line)
+                .trimmingCharacters(in: .whitespaces)
+            guard !code.isEmpty else {
+                continue
+            }
+            if isTomlTableHeader(code) {
+                break
+            }
+            guard let equalsIndex = code.firstIndex(of: "=") else {
+                continue
+            }
+
+            let rawKey = code[..<equalsIndex].trimmingCharacters(in: .whitespaces)
+            let key = rawKey.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            guard key == "model_provider" else {
+                continue
+            }
+
+            let rawValue = code[code.index(after: equalsIndex)...]
+                .trimmingCharacters(in: .whitespaces)
+            return tomlStringValue(rawValue)
+        }
+        return nil
+    }
+
+    private static func multilineDelimiterOpened(in line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard
+            !trimmed.hasPrefix("#"),
+            let equalsIndex = trimmed.firstIndex(of: "=")
+        else {
+            return nil
+        }
+        let value = trimmed[trimmed.index(after: equalsIndex)...]
+            .trimmingCharacters(in: .whitespaces)
+        for delimiter in ["\"\"\"", "'''"] {
+            guard value.hasPrefix(delimiter) else {
+                continue
+            }
+            let remainder = value.dropFirst(delimiter.count)
+            return remainder.contains(delimiter) ? nil : delimiter
+        }
+        return nil
+    }
+
+    private static func codeBeforeComment(in line: String) -> String {
+        var inBasicString = false
+        var inLiteralString = false
+        var isEscaped = false
+
+        for index in line.indices {
+            let character = line[index]
+            if inBasicString {
+                if isEscaped {
+                    isEscaped = false
+                } else if character == "\\" {
+                    isEscaped = true
+                } else if character == "\"" {
+                    inBasicString = false
+                }
+                continue
+            }
+            if inLiteralString {
+                if character == "'" {
+                    inLiteralString = false
+                }
+                continue
+            }
+
+            switch character {
+            case "\"":
+                inBasicString = true
+            case "'":
+                inLiteralString = true
+            case "#":
+                return String(line[..<index])
+            default:
+                continue
+            }
+        }
+        return line
+    }
+
+    private static func isTomlTableHeader(_ line: String) -> Bool {
+        line.hasPrefix("[") && (line.hasSuffix("]") || line.hasSuffix("]]"))
+    }
+
+    private static func tomlStringValue(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 2,
+              let quote = trimmed.first,
+              quote == "\"" || quote == "'",
+              trimmed.last == quote
+        else {
+            return nil
+        }
+        return String(trimmed.dropFirst().dropLast())
     }
 
     private static let backupTimestampFormatter: DateFormatter = {

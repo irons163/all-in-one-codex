@@ -61,11 +61,12 @@ public struct CodexConfigProjector: Sendable {
     /// Replaces only the app-owned regions while retaining all unrelated TOML text.
     public func project(original: String, profile: ProviderProfile) throws -> String {
         guard
-            let preset = ProviderCatalog.preset(for: profile.presetID),
+            ProviderCatalog.preset(for: profile.presetID) != nil,
             !profile.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             throw CodexSwitchError.invalidProfile
         }
+        let route = try ProviderCatalog.route(for: profile)
 
         let lineEnding = original.contains("\r\n") ? "\r\n" : "\n"
         let originalLines = Self.lines(from: original)
@@ -99,7 +100,7 @@ public struct CodexConfigProjector: Sendable {
         }
         lines = Self.removingTopLevelActiveAssignments(from: lines)
 
-        let activeBlock = Self.activeBlock(profile: profile, preset: preset)
+        let activeBlock = Self.activeBlock(profile: profile, route: route)
         if let firstTable = Self.firstTableIndex(in: lines) {
             lines.insert(contentsOf: activeBlock + [""], at: firstTable)
         } else {
@@ -309,11 +310,11 @@ public struct CodexConfigProjector: Sendable {
         return nil
     }
 
-    private static func activeBlock(profile: ProviderProfile, preset: ProviderPreset) -> [String] {
+    private static func activeBlock(profile: ProviderProfile, route: ProviderRoute) -> [String] {
         [
             activeBeginMarker,
             "model = \(tomlString(profile.model))",
-            "model_provider = \(tomlString(preset.providerID))",
+            "model_provider = \(tomlString(route.providerID))",
             activeEndMarker
         ]
     }
@@ -323,16 +324,16 @@ public struct CodexConfigProjector: Sendable {
         let service = tomlString(KeychainCredentialStore.service)
 
         var lines = [providersBeginMarker]
-        for (index, preset) in ProviderCatalog.all.enumerated() {
+        for (index, provider) in managedProviders.enumerated() {
             if index > 0 {
                 lines.append("")
             }
 
-            let tableID = preset.providerID
+            let tableID = provider.id
             lines.append("[model_providers.\(tableID)]")
-            lines.append("name = \(tomlString(preset.displayName))")
-            lines.append("base_url = \(tomlString(preset.baseURL))")
-            lines.append("wire_api = \"responses\"")
+            lines.append("name = \(tomlString(provider.displayName))")
+            lines.append("base_url = \(tomlString(provider.baseURL))")
+            lines.append("wire_api = \(tomlString(provider.wireAPI.rawValue))")
             lines.append("")
             lines.append("[model_providers.\(tableID).auth]")
             lines.append("command = \"/usr/bin/security\"")
@@ -344,6 +345,34 @@ public struct CodexConfigProjector: Sendable {
         }
         lines.append(providersEndMarker)
         return lines
+    }
+
+    private static let managedProviders: [ManagedProvider] = [
+        ManagedProvider(
+            id: ProviderCatalog.openCodeGoResponsesProviderID,
+            displayName: "OpenCode Go",
+            baseURL: ProviderCatalog.openCodeGoOfficialBaseURL,
+            wireAPI: .responses
+        ),
+        ManagedProvider(
+            id: ProviderCatalog.openCodeGoBridgeProviderID,
+            displayName: "OpenCode Go Bridge",
+            baseURL: ProviderCatalog.openCodeGoBridgeBaseURL,
+            wireAPI: .responses
+        ),
+        ManagedProvider(
+            id: ProviderCatalog.openRouterProviderID,
+            displayName: "OpenRouter",
+            baseURL: "https://openrouter.ai/api/v1",
+            wireAPI: .responses
+        )
+    ]
+
+    private struct ManagedProvider {
+        let id: String
+        let displayName: String
+        let baseURL: String
+        let wireAPI: ProviderWireAPI
     }
 
     private static func tomlString(_ value: String) -> String {

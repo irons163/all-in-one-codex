@@ -14,13 +14,40 @@ final class AppState: ObservableObject {
         let providerName: String
         let model: String
         let isActive: Bool
+        let requiresLoopbackBridge: Bool
+    }
+
+    struct ModelOption: Identifiable, Equatable {
+        enum Transport: String, Equatable {
+            case responses
+            case chatCompletions
+
+            var label: String {
+                switch self {
+                case .responses:
+                    return "Responses"
+                case .chatCompletions:
+                    return "Chat Completions → 本機 bridge"
+                }
+            }
+        }
+
+        let id: String
+        let modelID: String
+        let transport: Transport
+
+        var isChatOnly: Bool {
+            transport == .chatCompletions
+        }
     }
 
     struct PresetOption: Identifiable, Equatable {
         let id: String
         let name: String
         let endpoint: String
-        let models: [String]
+        let defaultModel: String
+        let models: [ModelOption]
+        let allowsCustomModels: Bool
     }
 
     struct ProfileDraft: Equatable {
@@ -52,6 +79,10 @@ final class AppState: ObservableObject {
         let profileName: String
         let providerName: String
         let endpoint: String
+        let routeName: String
+        let bridgeEnabled: Bool
+        let loopbackEndpoint: String?
+        let upstreamEndpoint: String?
         let model: String
         let summary: String
         let projectedConfig: String
@@ -63,6 +94,10 @@ final class AppState: ObservableObject {
             profileName: String,
             providerName: String,
             endpoint: String,
+            routeName: String,
+            bridgeEnabled: Bool,
+            loopbackEndpoint: String?,
+            upstreamEndpoint: String?,
             model: String,
             summary: String,
             projectedConfig: String,
@@ -74,12 +109,26 @@ final class AppState: ObservableObject {
             self.profileName = profileName
             self.providerName = providerName
             self.endpoint = endpoint
+            self.routeName = routeName
+            self.bridgeEnabled = bridgeEnabled
+            self.loopbackEndpoint = loopbackEndpoint
+            self.upstreamEndpoint = upstreamEndpoint
             self.model = model
             self.summary = summary
             self.projectedConfig = projectedConfig
             self.changes = changes
             self.warnings = warnings
         }
+    }
+
+    struct RoutePresentation: Equatable {
+        let routeName: String
+        let endpoint: String
+        let explanation: String
+        let bridgeEnabled: Bool
+        let loopbackEndpoint: String?
+        let upstreamEndpoint: String?
+        let isKnown: Bool
     }
 
     @Published private(set) var profileItems: [ProfileListItem] = []
@@ -126,9 +175,8 @@ final class AppState: ObservableObject {
         return profileItems.first { $0.id == selectedProfileID }
     }
 
-    func endpoint(for presetKey: String) -> String {
-        presetOptions.first { $0.id == presetKey }?.endpoint
-            ?? "由 Core preset 提供"
+    func endpoint(for presetKey: String, model: String) -> String {
+        routePresentation(for: presetKey, model: model).endpoint
     }
 
     func providerName(for presetKey: String) -> String {
@@ -137,7 +185,63 @@ final class AppState: ObservableObject {
     }
 
     func defaultModel(for presetKey: String) -> String {
-        presetOptions.first { $0.id == presetKey }?.models.first ?? ""
+        presetOptions.first { $0.id == presetKey }?.defaultModel ?? ""
+    }
+
+    func modelOptions(for presetKey: String) -> [ModelOption] {
+        presetOptions.first { $0.id == presetKey }?.models ?? []
+    }
+
+    func allowsCustomModels(for presetKey: String) -> Bool {
+        presetOptions.first { $0.id == presetKey }?.allowsCustomModels ?? false
+    }
+
+    func isDefaultModel(_ model: String, for presetKey: String) -> Bool {
+        model.trimmingCharacters(in: .whitespacesAndNewlines)
+            == defaultModel(for: presetKey)
+    }
+
+    func routePresentation(
+        for presetKey: String,
+        model: String
+    ) -> RoutePresentation {
+        let fallbackEndpoint = presetOptions.first { $0.id == presetKey }?.endpoint
+            ?? Self.fallbackEndpoint(for: presetKey)
+        guard let presetID = corePresetID(for: presetKey) else {
+            return unavailableRoute(
+                endpoint: fallbackEndpoint,
+                explanation: "Provider preset 無效，無法判定 route。"
+            )
+        }
+
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedModel.isEmpty else {
+            return unavailableRoute(
+                endpoint: fallbackEndpoint,
+                explanation: "請輸入或選擇 model，才能判定 route。"
+            )
+        }
+
+        do {
+            let route = try ProviderCatalog.route(
+                for: ProviderProfile(
+                    name: "Route preview",
+                    presetID: presetID,
+                    model: trimmedModel
+                )
+            )
+            return makeRoutePresentation(for: route)
+        } catch let error as ProviderRoutingError {
+            return unavailableRoute(
+                endpoint: fallbackEndpoint,
+                explanation: routingExplanation(for: error)
+            )
+        } catch {
+            return unavailableRoute(
+                endpoint: fallbackEndpoint,
+                explanation: "Core 無法判定此 model 的 route。"
+            )
+        }
     }
 
     func prepareEditorForSelection() {
@@ -188,6 +292,16 @@ final class AppState: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
+        var preparationError: Error?
+        do {
+            // Core decides whether the existing active configuration needs
+            // the bridge. A startup failure must not prevent profile metadata
+            // from being loaded below.
+            try clientAdapter.prepareForUse()
+        } catch {
+            preparationError = error
+        }
+
         do {
             // Core integration point: adapt only this call if load is sync.
             coreProfiles = try await profileRepository.load()
@@ -199,11 +313,23 @@ final class AppState: ObservableObject {
             statusMessage = coreProfiles.isEmpty
                 ? "尚未建立 profile。"
                 : "已載入 \(coreProfiles.count) 個 profile。"
+            if let preparationError {
+                errorMessage = failureMessage(
+                    "啟動 OpenCode Go bridge",
+                    error: preparationError
+                )
+            }
         } catch {
             coreProfiles = []
             rebuildProfileItems()
             statusMessage = nil
-            fail("載入 profiles", error: error)
+            let failures = [
+                preparationError.map {
+                    failureMessage("啟動 OpenCode Go bridge", error: $0)
+                },
+                failureMessage("載入 profiles", error: error)
+            ]
+            errorMessage = failures.compactMap { $0 }.joined(separator: "\n")
         }
     }
 
@@ -267,6 +393,7 @@ final class AppState: ObservableObject {
         let existing = draft.id.flatMap { id in
             coreProfiles.first { $0.id == id }
         }
+        preview = nil
 
         do {
             let profile = try makeCoreProfile(from: draft, existing: existing)
@@ -374,12 +501,17 @@ final class AppState: ObservableObject {
     private func rebuildProfileItems() {
         profileItems = coreProfiles.map { profile in
             let presentation = presetPresentation(for: profile.presetID)
+            let route = routePresentation(
+                for: presetKey(for: profile.presetID),
+                model: profile.model
+            )
             return ProfileListItem(
                 id: profile.id,
                 name: profile.name,
                 providerName: presentation.name,
                 model: profile.model,
-                isActive: profile.id == activeProfileID
+                isActive: profile.id == activeProfileID,
+                requiresLoopbackBridge: route.bridgeEnabled
             )
         }
     }
@@ -389,25 +521,44 @@ final class AppState: ObservableObject {
         corePreview: SwitchPreview
     ) -> PreviewSnapshot {
         let presentation = presetPresentation(for: profile.presetID)
+        let route = routePresentation(
+            for: presetKey(for: profile.presetID),
+            model: profile.model
+        )
+        var changes = [
+            "更新 ~/.codex/config.toml",
+            "切換 provider 為 \(presentation.name)",
+            "使用 model \(profile.model)"
+        ]
         var warnings: [String] = []
 
-        if presentation.name.localizedCaseInsensitiveContains("opencode") {
-            warnings.append("OpenCode Go MVP 僅支援原生 Responses model。")
+        if route.bridgeEnabled {
+            changes.append("Bridge：已啟用（本機 Responses ↔ Chat Completions 轉換）")
+            if let loopbackEndpoint = route.loopbackEndpoint {
+                changes.append("Loopback endpoint：\(loopbackEndpoint)")
+            }
+            if let upstreamEndpoint = route.upstreamEndpoint {
+                changes.append("Upstream endpoint：\(upstreamEndpoint)")
+            }
+            warnings.append(route.explanation)
+        } else {
+            changes.append("Bridge：未啟用（直接使用 Responses）")
+            changes.append("Endpoint：\(route.endpoint)")
         }
 
         return PreviewSnapshot(
             profileID: profile.id,
             profileName: profile.name,
             providerName: presentation.name,
-            endpoint: presentation.endpoint,
+            endpoint: route.endpoint,
+            routeName: route.routeName,
+            bridgeEnabled: route.bridgeEnabled,
+            loopbackEndpoint: route.loopbackEndpoint,
+            upstreamEndpoint: route.upstreamEndpoint,
             model: profile.model,
             summary: corePreview.summary,
             projectedConfig: corePreview.projected,
-            changes: [
-                "更新 ~/.codex/config.toml",
-                "切換 provider 為 \(presentation.name)",
-                "使用 model \(profile.model)"
-            ],
+            changes: changes,
             warnings: warnings
         )
     }
@@ -416,46 +567,134 @@ final class AppState: ObservableObject {
         let firstPreset = presetOptions.first
         return ProfileDraft(
             presetKey: firstPreset?.id ?? "",
-            model: firstPreset?.models.first ?? ""
+            model: firstPreset?.defaultModel ?? ""
         )
     }
 
     private func presetKey(for presetID: ProviderPresetID) -> String {
-        String(describing: presetID)
+        presetID.rawValue
     }
 
     private func corePresetID(for key: String) -> ProviderPresetID? {
-        ProviderCatalog.all.first { String(describing: $0.id) == key }?.id
+        ProviderCatalog.all.first {
+            $0.id.rawValue == key || String(describing: $0.id) == key
+        }?.id
     }
 
     private func presetPresentation(
         for presetID: ProviderPresetID
-    ) -> (name: String, endpoint: String, models: [String]) {
-        let key = String(describing: presetID)
+    ) -> (name: String, endpoint: String) {
+        let key = presetID.rawValue
         guard let preset = ProviderCatalog.preset(for: presetID) else {
             return (
                 Self.fallbackName(for: key),
-                Self.fallbackEndpoint(for: key),
-                []
+                Self.fallbackEndpoint(for: key)
             )
         }
         return (
             preset.displayName,
-            preset.baseURL,
-            [preset.defaultModel]
+            preset.baseURL
         )
     }
 
     private static func buildPresetOptions() -> [PresetOption] {
         ProviderCatalog.all.map { preset in
+            let descriptorModels = preset.modelDescriptors.compactMap { descriptor -> ModelOption? in
+                switch descriptor.wireAPI {
+                case .responses:
+                    return ModelOption(
+                        id: descriptor.modelID,
+                        modelID: descriptor.modelID,
+                        transport: .responses
+                    )
+                case .chatCompletions:
+                    return ModelOption(
+                        id: descriptor.modelID,
+                        modelID: descriptor.modelID,
+                        transport: .chatCompletions
+                    )
+                case .anthropicMessages:
+                    // Messages models remain unsupported and are not offered
+                    // as selectable UI options.
+                    return nil
+                }
+            }
+            let models = descriptorModels.isEmpty
+                ? [
+                    ModelOption(
+                        id: preset.defaultModel,
+                        modelID: preset.defaultModel,
+                        transport: .responses
+                    )
+                ]
+                : descriptorModels
             return PresetOption(
-                id: String(describing: preset.id),
+                id: preset.id.rawValue,
                 name: preset.displayName,
                 endpoint: preset.baseURL,
-                models: [preset.defaultModel]
+                defaultModel: preset.defaultModel,
+                models: models,
+                allowsCustomModels: preset.allowsCustomModels
             )
         }
         .sorted { $0.name < $1.name }
+    }
+
+    private func makeRoutePresentation(for route: ProviderRoute) -> RoutePresentation {
+        if route.requiresLoopbackBridge {
+            let upstreamEndpoint = Self.openCodeGoUpstreamEndpoint
+            return RoutePresentation(
+                routeName: "Local Bridge → upstream Chat Completions",
+                endpoint: route.baseURL,
+                explanation: "Chat-only model 由本機 bridge 轉換 Responses ↔ Chat Completions；app 需保持執行。",
+                bridgeEnabled: true,
+                loopbackEndpoint: route.baseURL,
+                upstreamEndpoint: upstreamEndpoint,
+                isKnown: true
+            )
+        }
+
+        return RoutePresentation(
+            routeName: "Direct Responses",
+            endpoint: route.baseURL,
+            explanation: "Codex 直接使用 provider 的 Responses endpoint。",
+            bridgeEnabled: false,
+            loopbackEndpoint: nil,
+            upstreamEndpoint: nil,
+            isKnown: true
+        )
+    }
+
+    private func unavailableRoute(
+        endpoint: String,
+        explanation: String
+    ) -> RoutePresentation {
+        RoutePresentation(
+            routeName: "Route unavailable",
+            endpoint: endpoint,
+            explanation: explanation,
+            bridgeEnabled: false,
+            loopbackEndpoint: nil,
+            upstreamEndpoint: nil,
+            isKnown: false
+        )
+    }
+
+    private func routingExplanation(for error: ProviderRoutingError) -> String {
+        switch error {
+        case .invalidModel:
+            return "Model 不可為空。"
+        case .unknownOpenCodeGoModel:
+            return "此 OpenCode Go model 不在支援清單內；Core 會拒絕此設定。"
+        case .unsupportedOpenCodeGoWireAPI(.anthropicMessages):
+            return "此 model 使用 Anthropic Messages API，目前尚未支援；Core 會拒絕此設定。"
+        case .unsupportedOpenCodeGoWireAPI:
+            return "此 OpenCode Go model 使用目前不支援的 provider API；Core 會拒絕此設定。"
+        }
+    }
+
+    private static var openCodeGoUpstreamEndpoint: String {
+        "\(ProviderCatalog.openCodeGoOfficialBaseURL)/chat/completions"
     }
 
     private static func fallbackName(for key: String) -> String {
@@ -472,7 +711,7 @@ final class AppState: ObservableObject {
     private static func fallbackEndpoint(for key: String) -> String {
         let normalized = key.lowercased()
         if normalized.contains("opencode") {
-            return "https://opencode.ai/zen/v1"
+            return "https://opencode.ai/zen/go/v1"
         }
         if normalized.contains("openrouter") {
             return "https://openrouter.ai/api/v1"
@@ -481,6 +720,10 @@ final class AppState: ObservableObject {
     }
 
     private func fail(_ operation: String, error: Error? = nil) {
+        errorMessage = failureMessage(operation, error: error)
+    }
+
+    private func failureMessage(_ operation: String, error: Error? = nil) -> String {
         // Core's typed errors intentionally omit credential contents. Unknown
         // errors remain generic so provider request details cannot leak into
         // the UI.
@@ -488,9 +731,9 @@ final class AppState: ObservableObject {
            let description = localizedError.errorDescription,
            !description.isEmpty
         {
-            errorMessage = "\(operation) 失敗：\(description)"
+            return "\(operation) 失敗：\(description)"
         } else {
-            errorMessage = "\(operation) 失敗。請檢查 Core adapter 與設定。"
+            return "\(operation) 失敗。請檢查 Core adapter 與設定。"
         }
     }
 

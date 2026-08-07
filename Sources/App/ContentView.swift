@@ -132,6 +132,11 @@ private struct ProfileRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if item.requiresLoopbackBridge {
+                    Label("需要本機 bridge", systemImage: "arrow.left.arrow.right")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
 
             Spacer(minLength: 0)
@@ -139,7 +144,7 @@ private struct ProfileRow: View {
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(item.name), \(item.providerName), \(item.isActive ? "active" : "inactive")"
+            "\(item.name), \(item.providerName), \(item.model), \(item.isActive ? "active" : "inactive")"
         )
     }
 }
