@@ -1,0 +1,55 @@
+name: AllInOneCodex
+
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    PRODUCT_BUNDLE_IDENTIFIER: com.allinonecodex.app
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+
+targets:
+  AllInOneCodex:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/App
+      - path: Sources/Core
+      - path: Sources/Resources
+        type: resources
+    settings:
+      base:
+        PRODUCT_NAME: AllInOneCodex
+        PRODUCT_BUNDLE_IDENTIFIER: com.allinonecodex.app
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+
+  AllInOneCodexTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/CoreTests
+    dependencies:
+      - target: AllInOneCodex
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.allinonecodex.tests
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+schemes:
+  AllInOneCodex:
+    build:
+      targets:
+        AllInOneCodex: all
+        AllInOneCodexTests: [test]
+    test:
+      targets:
+        - name: AllInOneCodexTests

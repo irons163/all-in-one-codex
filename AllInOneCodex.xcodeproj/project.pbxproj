@@ -1,0 +1,463 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2ADB9E6C758A5A1163C6E262 /* AllInOneCodexApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97107184FD9E414BC12D8BFA /* AllInOneCodexApp.swift */; };
+		31F54E3EA021C604A9A4DCA1 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6268B355D1DBF12EAD9C970A /* ContentView.swift */; };
+		36B1DF10360B0D1152F7504D /* CodexConfigProjector.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1C85CF0717CC1B89FC40288 /* CodexConfigProjector.swift */; };
+		3A787F22DED9189BC5BD1FEB /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 437A7B0731A952AB3B2DAE37 /* CredentialStore.swift */; };
+		3F4D4BE57E42DC54849AC73C /* CodexCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 321BFF8E53445ECDA6DC3286 /* CodexCoreTests.swift */; };
+		56DFF33B81B81285225ACF4C /* ProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FA1B63779DDD082993C4901 /* ProfileRepository.swift */; };
+		6A52D444D5C8D237B141A725 /* Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20B8C3A735E1693D4DE1FF4 /* Provider.swift */; };
+		6B63EB3C1B2DC6B83444743D /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 232A5BD77D60FE4C7C6045C5 /* MenuBarView.swift */; };
+		8D05B2780C820B5223806660 /* ProfileEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF3087FDA140118AC13E4425 /* ProfileEditorView.swift */; };
+		BAF0DB9E83CDFAB36DAEE7E7 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6453E9995E39F2C120A913C /* AppState.swift */; };
+		C4812B742DC4E13D2408ACA0 /* CodexClientAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55B9926684FDBC96D2447846 /* CodexClientAdapter.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E1A4CD337FA6FAB1E20590A3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 03A12B32AFE68BB79CBCD302 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9FE492D4CFE4EE9BE93F5191;
+			remoteInfo = AllInOneCodex;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		232A5BD77D60FE4C7C6045C5 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		321BFF8E53445ECDA6DC3286 /* CodexCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexCoreTests.swift; sourceTree = "<group>"; };
+		437A7B0731A952AB3B2DAE37 /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
+		55B9926684FDBC96D2447846 /* CodexClientAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexClientAdapter.swift; sourceTree = "<group>"; };
+		6268B355D1DBF12EAD9C970A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		97107184FD9E414BC12D8BFA /* AllInOneCodexApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllInOneCodexApp.swift; sourceTree = "<group>"; };
+		9FA1B63779DDD082993C4901 /* ProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileRepository.swift; sourceTree = "<group>"; };
+		B6453E9995E39F2C120A913C /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		BF3087FDA140118AC13E4425 /* ProfileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditorView.swift; sourceTree = "<group>"; };
+		C1C85CF0717CC1B89FC40288 /* CodexConfigProjector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexConfigProjector.swift; sourceTree = "<group>"; };
+		DC9F2BD93831DA9F96805418 /* AllInOneCodex.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AllInOneCodex.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC6D8B1F2FE3BD54CC8579AC /* AllInOneCodexTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AllInOneCodexTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F20B8C3A735E1693D4DE1FF4 /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		11A98F587D830D6AF2B28FDD /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				55B9926684FDBC96D2447846 /* CodexClientAdapter.swift */,
+				C1C85CF0717CC1B89FC40288 /* CodexConfigProjector.swift */,
+				437A7B0731A952AB3B2DAE37 /* CredentialStore.swift */,
+				9FA1B63779DDD082993C4901 /* ProfileRepository.swift */,
+				F20B8C3A735E1693D4DE1FF4 /* Provider.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		1705BBB1FF1B1B66ECC9D7A8 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				C146CF883F437A3FE3D873F8 /* App */,
+				11A98F587D830D6AF2B28FDD /* Core */,
+				2901D000EB04F793738E48B9 /* Resources */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		2901D000EB04F793738E48B9 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		6905A0CE7A44FFDFC8F5E7FE = {
+			isa = PBXGroup;
+			children = (
+				1705BBB1FF1B1B66ECC9D7A8 /* Sources */,
+				A789838493DC0D60E8BF6629 /* Tests */,
+				E529DC17574DB9FFB72670D3 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A789838493DC0D60E8BF6629 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				F005AB0F5AFA6DF0F2B576E6 /* CoreTests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		C146CF883F437A3FE3D873F8 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				97107184FD9E414BC12D8BFA /* AllInOneCodexApp.swift */,
+				B6453E9995E39F2C120A913C /* AppState.swift */,
+				6268B355D1DBF12EAD9C970A /* ContentView.swift */,
+				232A5BD77D60FE4C7C6045C5 /* MenuBarView.swift */,
+				BF3087FDA140118AC13E4425 /* ProfileEditorView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		E529DC17574DB9FFB72670D3 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				DC9F2BD93831DA9F96805418 /* AllInOneCodex.app */,
+				EC6D8B1F2FE3BD54CC8579AC /* AllInOneCodexTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		F005AB0F5AFA6DF0F2B576E6 /* CoreTests */ = {
+			isa = PBXGroup;
+			children = (
+				321BFF8E53445ECDA6DC3286 /* CodexCoreTests.swift */,
+			);
+			path = CoreTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		254D81411CC76CE8CF514FF4 /* AllInOneCodexTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 20800E2596CE1E599126CD43 /* Build configuration list for PBXNativeTarget "AllInOneCodexTests" */;
+			buildPhases = (
+				D66AB7EDEED3AA4DD52A3365 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				164BD0383CCDA9883A5ACE3B /* PBXTargetDependency */,
+			);
+			name = AllInOneCodexTests;
+			packageProductDependencies = (
+			);
+			productName = AllInOneCodexTests;
+			productReference = EC6D8B1F2FE3BD54CC8579AC /* AllInOneCodexTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		9FE492D4CFE4EE9BE93F5191 /* AllInOneCodex */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 37FD046E5A56915A289453C9 /* Build configuration list for PBXNativeTarget "AllInOneCodex" */;
+			buildPhases = (
+				146341E5A8A9636B8CC77A6A /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AllInOneCodex;
+			packageProductDependencies = (
+			);
+			productName = AllInOneCodex;
+			productReference = DC9F2BD93831DA9F96805418 /* AllInOneCodex.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		03A12B32AFE68BB79CBCD302 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 90BB44ABF1EC8B10B247449D /* Build configuration list for PBXProject "AllInOneCodex" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 6905A0CE7A44FFDFC8F5E7FE;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E529DC17574DB9FFB72670D3 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				9FE492D4CFE4EE9BE93F5191 /* AllInOneCodex */,
+				254D81411CC76CE8CF514FF4 /* AllInOneCodexTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		146341E5A8A9636B8CC77A6A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2ADB9E6C758A5A1163C6E262 /* AllInOneCodexApp.swift in Sources */,
+				BAF0DB9E83CDFAB36DAEE7E7 /* AppState.swift in Sources */,
+				C4812B742DC4E13D2408ACA0 /* CodexClientAdapter.swift in Sources */,
+				36B1DF10360B0D1152F7504D /* CodexConfigProjector.swift in Sources */,
+				31F54E3EA021C604A9A4DCA1 /* ContentView.swift in Sources */,
+				3A787F22DED9189BC5BD1FEB /* CredentialStore.swift in Sources */,
+				6B63EB3C1B2DC6B83444743D /* MenuBarView.swift in Sources */,
+				8D05B2780C820B5223806660 /* ProfileEditorView.swift in Sources */,
+				56DFF33B81B81285225ACF4C /* ProfileRepository.swift in Sources */,
+				6A52D444D5C8D237B141A725 /* Provider.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D66AB7EDEED3AA4DD52A3365 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3F4D4BE57E42DC54849AC73C /* CodexCoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		164BD0383CCDA9883A5ACE3B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9FE492D4CFE4EE9BE93F5191 /* AllInOneCodex */;
+			targetProxy = E1A4CD337FA6FAB1E20590A3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		4553A7A3D23FD2745811FD08 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.allinonecodex.tests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AllInOneCodex.app/Contents/MacOS/AllInOneCodex";
+			};
+			name = Release;
+		};
+		5ABCDB9D5BA652AFDCF4AE7E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.allinonecodex.tests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AllInOneCodex.app/Contents/MacOS/AllInOneCodex";
+			};
+			name = Debug;
+		};
+		7A0D71A05992E496EB8ABE12 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.allinonecodex.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		A1AC214F5EC642CB46AAF968 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.allinonecodex.app;
+				PRODUCT_NAME = AllInOneCodex;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		AF125B15E2578D4E926B8164 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.allinonecodex.app;
+				PRODUCT_NAME = AllInOneCodex;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		BD295A187A0CC33053E02C9B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.allinonecodex.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		20800E2596CE1E599126CD43 /* Build configuration list for PBXNativeTarget "AllInOneCodexTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5ABCDB9D5BA652AFDCF4AE7E /* Debug */,
+				4553A7A3D23FD2745811FD08 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		37FD046E5A56915A289453C9 /* Build configuration list for PBXNativeTarget "AllInOneCodex" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1AC214F5EC642CB46AAF968 /* Debug */,
+				AF125B15E2578D4E926B8164 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		90BB44ABF1EC8B10B247449D /* Build configuration list for PBXProject "AllInOneCodex" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BD295A187A0CC33053E02C9B /* Debug */,
+				7A0D71A05992E496EB8ABE12 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 03A12B32AFE68BB79CBCD302 /* Project object */;
+}
