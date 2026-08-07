@@ -107,6 +107,30 @@ struct ProfileEditorView: View {
                 Text("只接受新的 API key；儲存成功後欄位會清空。既有 key 不會讀出或顯示。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                switch appState.editorCredentialStatus {
+                case .missing:
+                    Label(
+                        "尚未設定 API key；Apply 前請先輸入。",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                case .saved:
+                    Label(
+                        "API key 已儲存；不會在畫面中顯示。",
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                case .newValue:
+                    Label(
+                        "新的 API key 將在 Save 或 Apply 時儲存。",
+                        systemImage: "key.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             }
 
             if let preview = appState.preview,
@@ -147,7 +171,10 @@ struct ProfileEditorView: View {
                             Label("Apply", systemImage: "checkmark.circle")
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(appState.isBusy)
+                        .disabled(
+                            appState.isBusy
+                                || appState.editorCredentialStatus == .missing
+                        )
                     }
                 }
             }

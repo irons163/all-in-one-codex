@@ -73,6 +73,12 @@ final class AppState: ObservableObject {
         }
     }
 
+    enum CredentialStatus: Equatable {
+        case missing
+        case saved
+        case newValue
+    }
+
     struct PreviewSnapshot: Identifiable, Equatable {
         let id: UUID
         let profileID: UUID
@@ -149,6 +155,7 @@ final class AppState: ObservableObject {
     private let credentialStore: any CredentialStoring
     private let clientAdapter: any ClientAdapter
     private var coreProfiles: [ProviderProfile] = []
+    private var credentialAvailability: [UUID: Bool] = [:]
     private var lastReceipt: SwitchReceipt?
     private var hasLoadedProfiles = false
 
@@ -173,6 +180,18 @@ final class AppState: ObservableObject {
     var selectedProfileItem: ProfileListItem? {
         guard let selectedProfileID else { return nil }
         return profileItems.first { $0.id == selectedProfileID }
+    }
+
+    var editorCredentialStatus: CredentialStatus {
+        if !editorDraft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .newValue
+        }
+        guard let profileID = editorDraft.id,
+              credentialAvailability[profileID] == true
+        else {
+            return .missing
+        }
+        return .saved
     }
 
     func endpoint(for presetKey: String, model: String) -> String {
@@ -264,6 +283,7 @@ final class AppState: ObservableObject {
             model: profile.model,
             apiKey: ""
         )
+        refreshCredentialAvailability(for: profile.id)
         preview = nil
     }
 
@@ -356,9 +376,9 @@ final class AppState: ObservableObject {
 
             // Never load or display an existing credential. A non-empty value
             // here is always a newly entered value from SecureField.
-            if !draft.apiKey.isEmpty {
+            if hasCredentialInput(draft.apiKey) {
                 try credentialStore.save(
-                    Data(draft.apiKey.utf8),
+                    Data(draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).utf8),
                     for: profile.id
                 )
                 credentialWasStored = true
@@ -367,6 +387,8 @@ final class AppState: ObservableObject {
             // Core integration point: adapt only this call if save is sync.
             try await profileRepository.save(updatedProfiles)
             coreProfiles = updatedProfiles
+            let hasCredential = credentialWasStored || credentialStore.contains(for: profile.id)
+            credentialAvailability[profile.id] = hasCredential
             selectedProfileID = profile.id
             isCreatingProfile = false
             isShowingNewProfile = false
@@ -374,7 +396,9 @@ final class AppState: ObservableObject {
             rebuildProfileItems()
             prepareEditorForSelection()
             preview = nil
-            statusMessage = "Profile 已儲存。"
+            statusMessage = hasCredential
+                ? "Profile 已儲存。"
+                : "Profile 已儲存，但尚未設定 API key。"
             return profile.id
         } catch {
             // Do not retain a credential after it has been handed to Core.
@@ -417,6 +441,12 @@ final class AppState: ObservableObject {
         // the selected persisted profile. Quick apply uses the single entry
         // point below and never bypasses AppState.
         if editorDraft.id == selectedProfileID, !isCreatingProfile {
+            guard ensureCredentialForApply(
+                profileID: selectedProfileID,
+                pendingCredential: editorDraft.apiKey
+            ) else {
+                return
+            }
             guard let savedID = await saveEditor() else { return }
             await applyProfile(profileID: savedID)
         } else {
@@ -458,6 +488,12 @@ final class AppState: ObservableObject {
             return
         }
 
+        guard credentialStore.contains(for: profile.id) else {
+            credentialAvailability[profile.id] = false
+            fail("套用 profile", error: AppStateError.missingCredential)
+            return
+        }
+
         isBusy = true
         defer { isBusy = false }
 
@@ -471,6 +507,35 @@ final class AppState: ObservableObject {
         } catch {
             fail("套用 profile", error: error)
         }
+    }
+
+    private func ensureCredentialForApply(
+        profileID: UUID,
+        pendingCredential: String
+    ) -> Bool {
+        if hasCredentialInput(pendingCredential) {
+            return true
+        }
+
+        let hasCredential = credentialStore.contains(for: profileID)
+        credentialAvailability[profileID] = hasCredential
+        guard hasCredential else {
+            statusMessage = "尚未設定 API key。"
+            fail(
+                "套用 profile",
+                error: AppStateError.missingCredential
+            )
+            return false
+        }
+        return true
+    }
+
+    private func refreshCredentialAvailability(for profileID: UUID) {
+        credentialAvailability[profileID] = credentialStore.contains(for: profileID)
+    }
+
+    private func hasCredentialInput(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func makeCoreProfile(
@@ -741,6 +806,7 @@ final class AppState: ObservableObject {
         case invalidName
         case invalidProvider
         case invalidModel
+        case missingCredential
 
         var errorDescription: String? {
             switch self {
@@ -750,6 +816,8 @@ final class AppState: ObservableObject {
                 return "Provider preset 無效。"
             case .invalidModel:
                 return "Model 不可為空。"
+            case .missingCredential:
+                return "尚未設定 API key。請先在 Credentials 輸入 API key。"
             }
         }
     }

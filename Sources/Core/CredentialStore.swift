@@ -24,6 +24,17 @@ public protocol CredentialStoring: AnyObject {
     func save(_ credential: Data, for profileID: UUID) throws
     func read(for profileID: UUID) throws -> Data
     func delete(for profileID: UUID) throws
+    func contains(for profileID: UUID) -> Bool
+}
+
+public extension CredentialStoring {
+    /// Availability checks must not expose or retain the credential bytes.
+    func contains(for profileID: UUID) -> Bool {
+        guard let credential = try? read(for: profileID) else {
+            return false
+        }
+        return !credential.isEmpty
+    }
 }
 
 /// A Keychain-backed credential store. Each profile UUID is the Keychain account.
@@ -83,6 +94,13 @@ public final class KeychainCredentialStore: CredentialStoring {
             throw CredentialStoreError.unavailable
         }
         return credential
+    }
+
+    public func contains(for profileID: UUID) -> Bool {
+        var query = baseQuery(for: profileID)
+        query[kSecReturnData] = false
+        query[kSecMatchLimit] = kSecMatchLimitOne
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     public func delete(for profileID: UUID) throws {
