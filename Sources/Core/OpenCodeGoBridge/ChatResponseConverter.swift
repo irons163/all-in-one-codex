@@ -9,7 +9,8 @@ public enum OpenCodeGoChatResponseConverter {
         contentType: String? = nil,
         fallbackModel: String,
         toolContext: OpenCodeGoToolContext = OpenCodeGoToolContext(),
-        outputMode: OpenCodeGoResponsesOutputMode = .standard
+        outputMode: OpenCodeGoResponsesOutputMode = .standard,
+        preferredResponseID: String? = nil
     ) throws -> OpenCodeGoResponsesConversion {
         let payloads: [[String: Any]]
         let text = String(data: chatResponse, encoding: .utf8) ?? ""
@@ -33,14 +34,22 @@ public enum OpenCodeGoChatResponseConverter {
             throw OpenCodeGoBridgeError.invalidUpstreamResponse
         }
 
-        let responseID = makeResponseID(from: accumulation.sourceID)
+        let responseID: String
+        if let preferred = preferredResponseID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !preferred.isEmpty
+        {
+            responseID = preferred
+        } else {
+            responseID = makeResponseID(from: accumulation.sourceID)
+        }
         let toolCalls = accumulation.completedToolCalls
         let separated = OpenCodeGoReasoningTagExtractor.extract(from: accumulation.text)
         let reasoning = accumulation.reasoning + separated.reasoning
         let model = accumulation.model ?? fallbackModel
         let reasoningContentPresent = accumulation.reasoningContentPresent ||
             !reasoning.isEmpty ||
-            (!toolCalls.isEmpty && model.lowercased().contains("deepseek-v4"))
+            (!toolCalls.isEmpty && OpenCodeGoThinkingProfile.infer(model: model)?.requiresToolCallReasoningPlaceholder == true)
         let createdAt = accumulation.createdAt ?? Int(Date().timeIntervalSince1970)
         let usage = normalizedUsage(accumulation.usage)
         let sse: Data

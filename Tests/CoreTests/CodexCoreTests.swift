@@ -1103,7 +1103,7 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertTrue(message.keys.contains("content"))
         XCTAssertEqual(message["content"] as? String, "")
         XCTAssertTrue(message.keys.contains("reasoning_content"))
-        XCTAssertEqual(message["reasoning_content"] as? String, "")
+        XCTAssertEqual(message["reasoning_content"] as? String, "tool call")
     }
 
     func testDeepSeekFullAssistantHistoryExtractsContentPartReasoning() throws {
@@ -1167,11 +1167,68 @@ final class CodexCoreTests: XCTestCase {
         for message in messages {
             XCTAssertEqual(message["role"] as? String, "assistant")
             XCTAssertEqual(message["content"] as? String, "")
-            XCTAssertEqual(message["reasoning_content"] as? String, "")
+            XCTAssertEqual(message["reasoning_content"] as? String, "tool call")
         }
     }
 
-    func testGLMToolHistoryDoesNotFabricateContentOrReasoningContent() throws {
+    func testDeepSeekStandaloneReasoningSummaryAttachesToFollowingToolCall() throws {
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "input": [
+                [
+                    "type": "reasoning",
+                    "summary": [[
+                        "type": "summary_text",
+                        "text": "I should inspect the current goal before updating it."
+                    ]]
+                ],
+                [
+                    "type": "function_call",
+                    "call_id": "call_goal",
+                    "name": "get_goal",
+                    "arguments": "{}"
+                ],
+                [
+                    "type": "function_call_output",
+                    "call_id": "call_goal",
+                    "output": #"{"status":"active"}"#
+                ]
+            ],
+            "tools": [[
+                "type": "function",
+                "name": "get_goal",
+                "parameters": [
+                    "type": "object",
+                    "properties": [String: Any]()
+                ]
+            ]]
+        ]
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request)
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+        let toolCall = try XCTUnwrap(
+            (messages.first?["tool_calls"] as? [[String: Any]])?.first
+        )
+
+        XCTAssertEqual(messages.map { $0["role"] as? String }, ["assistant", "tool"])
+        XCTAssertEqual(messages.first?["content"] as? String, "")
+        XCTAssertEqual(
+            messages.first?["reasoning_content"] as? String,
+            "I should inspect the current goal before updating it."
+        )
+        XCTAssertEqual(
+            (toolCall["function"] as? [String: Any])?["name"] as? String,
+            "get_goal"
+        )
+        XCTAssertEqual(messages.last?["tool_call_id"] as? String, "call_goal")
+    }
+
+    func testGLMToolHistoryBackfillsThinkingPlaceholderLikeCCSwitch() throws {
         let request: [String: Any] = [
             "model": "glm-5.2",
             "input": [
@@ -1203,15 +1260,68 @@ final class CodexCoreTests: XCTestCase {
 
         XCTAssertEqual(messages.count, 2)
         for message in messages {
-            XCTAssertFalse(message.keys.contains("content"))
-            XCTAssertFalse(message.keys.contains("reasoning_content"))
+            XCTAssertEqual(message["content"] as? String, "")
+            XCTAssertEqual(message["reasoning_content"] as? String, "tool call")
         }
+        XCTAssertEqual(
+            (chat["thinking"] as? [String: Any])?["type"] as? String,
+            "enabled"
+        )
     }
 
-    func testDeepSeekReasoningEffortMapsToThinking() throws {
+    func testKimiToolHistoryBackfillsThinkingPlaceholder() throws {
+        let request: [String: Any] = [
+            "model": "kimi-k2.7-code",
+            "input": [[
+                "type": "function_call",
+                "call_id": "call_kimi",
+                "name": "lookup_weather",
+                "arguments": "{}"
+            ]]
+        ]
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request)
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let message = try XCTUnwrap((chat["messages"] as? [[String: Any]])?.first)
+        XCTAssertEqual(message["reasoning_content"] as? String, "tool call")
+        XCTAssertEqual(message["content"] as? String, "")
+        XCTAssertEqual(
+            (chat["thinking"] as? [String: Any])?["type"] as? String,
+            "enabled"
+        )
+    }
+
+    func testIncrementalChatSSEParserReassemblesFragmentedEvents() throws {
+        var parser = OpenCodeGoIncrementalChatSSEParser()
+        let first = try parser.push(Data("data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"He\"}}]}\n".utf8))
+        XCTAssertTrue(first.isEmpty)
+        let second = try parser.push(Data("\ndata: {\"choices\":[{\"delta\":{\"content\":\"llo\"},\"finish_reason\":\"stop\"}]}\n\n".utf8))
+        XCTAssertEqual(second.count, 2)
+        XCTAssertEqual(
+            ((second[0]["choices"] as? [[String: Any]])?.first?["delta"] as? [String: Any])?["content"] as? String,
+            "He"
+        )
+        let early = try OpenCodeGoStreamingChatBridge.earlyLifecycleSSE(
+            responseID: "resp_stream_test",
+            model: "glm-5.2"
+        )
+        let earlyText = String(data: early, encoding: .utf8) ?? ""
+        XCTAssertTrue(earlyText.contains("event: response.created"))
+        XCTAssertTrue(earlyText.contains("event: response.in_progress"))
+        let stripped = OpenCodeGoStreamingChatBridge.stripLeadingLifecycle(from: early)
+        XCTAssertTrue(stripped.isEmpty)
+    }
+
+    func testDeepSeekReasoningEffortMapsToThinkingToggleOnly() throws {
         let cases: [([String: Any], String)] = [
             (["reasoning": ["effort": "none"]], "disabled"),
-            (["reasoning_effort": "high"], "enabled")
+            (["reasoning_effort": "low"], "enabled"),
+            (["reasoning": ["effort": "medium"]], "enabled"),
+            (["reasoning": ["effort": "xhigh"]], "enabled"),
+            (["reasoning_effort": "max"], "enabled")
         ]
 
         for (settings, expectedThinkingType) in cases {
@@ -1230,9 +1340,65 @@ final class CodexCoreTests: XCTestCase {
             let thinking = try XCTUnwrap(chat["thinking"] as? [String: Any])
 
             XCTAssertEqual(thinking["type"] as? String, expectedThinkingType)
+            // OpenCode Go rejected first-turn requests that also forwarded
+            // `reasoning_effort`; keep the Chat body on the thinking toggle.
             XCTAssertNil(chat["reasoning_effort"])
             XCTAssertNil(chat["reasoning"])
         }
+    }
+
+    func testDeepSeekGoalToolPayloadUsesNestedSchemaAndCompatibleControls() throws {
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "input": "Create the active goal.",
+            "tools": [[
+                "type": "function",
+                "function": [
+                    "name": "create_goal",
+                    "description": "Create the active goal.",
+                    "parameters": [
+                        "type": NSNull(),
+                        "properties": NSNull()
+                    ]
+                ]
+            ]],
+            "tool_choice": ["type": "function", "name": "create_goal"],
+            "parallel_tool_calls": true,
+            "max_output_tokens": 512,
+            "response_format": ["type": "json_object"],
+            "reasoning": ["effort": "high"],
+            "stream": true
+        ]
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request)
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let function = try XCTUnwrap(
+            (chat["tools"] as? [[String: Any]])?.first?["function"] as? [String: Any]
+        )
+        let parameters = try XCTUnwrap(function["parameters"] as? [String: Any])
+
+        XCTAssertEqual(function["name"] as? String, "create_goal")
+        XCTAssertEqual(parameters["type"] as? String, "object")
+        XCTAssertNotNil(parameters["properties"] as? [String: Any])
+        // Thinking mode cannot force a function tool_choice; coerce to auto.
+        XCTAssertEqual(chat["tool_choice"] as? String, "auto")
+        XCTAssertNil(chat["parallel_tool_calls"])
+        XCTAssertEqual(chat["max_tokens"] as? Int, 512)
+        XCTAssertEqual(
+            (chat["stream_options"] as? [String: Any])?["include_usage"] as? Bool,
+            true
+        )
+        // DeepSeek rejects json_object response_format without "json" in prompt.
+        XCTAssertNil(chat["response_format"])
+        XCTAssertEqual(
+            (chat["thinking"] as? [String: Any])?["type"] as? String,
+            "enabled"
+        )
+        XCTAssertNil(chat["reasoning_effort"])
     }
 
     func testGoalToolsRoundTripThroughDeepSeekToolHistory() throws {
@@ -1358,7 +1524,7 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(assistant["role"] as? String, "assistant")
         XCTAssertEqual(assistant["content"] as? String, "")
         XCTAssertTrue(assistant.keys.contains("reasoning_content"))
-        XCTAssertEqual(assistant["reasoning_content"] as? String, "")
+        XCTAssertEqual(assistant["reasoning_content"] as? String, "tool call")
         XCTAssertEqual(messages.last?["role"] as? String, "tool")
         XCTAssertEqual(messages.last?["tool_call_id"] as? String, "call_goal")
     }
@@ -1580,7 +1746,9 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertTrue(messages[0].keys.contains("content"))
         XCTAssertEqual(messages[0]["content"] as? String, "")
         XCTAssertTrue(messages[0].keys.contains("reasoning_content"))
-        XCTAssertEqual(messages[0]["reasoning_content"] as? String, "")
+        // Empty upstream reasoning is not valid on DeepSeek tool-call replay;
+        // match cc-switch and inject a non-empty placeholder.
+        XCTAssertEqual(messages[0]["reasoning_content"] as? String, "tool call")
     }
 
     func testDeepSeekToolCallWithReasoningRoundTripsContent() throws {
@@ -1835,39 +2003,76 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertFalse(normalized.message.contains("tools[0]"))
     }
 
-    func testFallsBackToGenericSanitizedErrorForUnknownOrMalformedUpstreamBodies() {
+    func testClassifiesOpaque400WithoutLeakingUpstreamBody() {
         let secret = "fixture-secret-malformed-upstream"
-        let bodies = [
-            Data(
-                """
-                {
-                  "error": {
-                    "message": "Unrelated provider failure \(secret)",
-                    "type": "invalid_request_error",
-                    "code": "unexpected_provider_code",
-                    "param": "unrelated"
-                  }
-                }
-                """.utf8
-            ),
-            Data("not-json-\(secret)".utf8)
-        ]
+        let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+            OpenCodeGoBridgeError.upstreamRejected,
+            upstreamStatusCode: 400,
+            upstreamErrorBody: Data("not-json-\(secret)".utf8),
+            model: "deepseek-v4-flash"
+        )
 
-        for upstreamBody in bodies {
-            let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
-                OpenCodeGoBridgeError.upstreamRejected,
-                upstreamStatusCode: 400,
-                upstreamErrorBody: upstreamBody
-            )
+        XCTAssertEqual(normalized.statusCode, 400)
+        XCTAssertEqual(normalized.code, "upstream_invalid_request_opaque_http_400")
+        XCTAssertEqual(
+            normalized.message,
+            "OpenCode Go rejected the converted request (HTTP 400; upstream detail unavailable)."
+        )
+        XCTAssertNil(normalized.providerStatus)
+        XCTAssertFalse(normalized.message.contains(secret))
+    }
 
-            XCTAssertEqual(normalized.statusCode, 400)
-            XCTAssertEqual(normalized.code, "upstream_invalid_request")
-            XCTAssertEqual(
-                normalized.message,
-                "OpenCode Go rejected the converted request."
-            )
-            XCTAssertFalse(normalized.message.contains(secret))
-        }
+    func testFallsBackToGenericSanitizedErrorForUnknownStructuredUpstreamBody() {
+        let secret = "fixture-secret-unknown-upstream"
+        let upstreamBody = Data(
+            """
+            {
+              "error": {
+                "message": "Unrelated provider failure \(secret)",
+                "type": "invalid_request_error",
+                "code": "unexpected_provider_code",
+                "param": "unrelated"
+              }
+            }
+            """.utf8
+        )
+
+        let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+            OpenCodeGoBridgeError.upstreamRejected,
+            upstreamStatusCode: 400,
+            upstreamErrorBody: upstreamBody
+        )
+
+        XCTAssertEqual(normalized.statusCode, 400)
+        XCTAssertEqual(normalized.code, "upstream_invalid_request")
+        XCTAssertEqual(
+            normalized.message,
+            "OpenCode Go rejected the converted request."
+        )
+        XCTAssertFalse(normalized.message.contains(secret))
+    }
+
+    func testClassifiesDeepSeekFlashFiveHundredAsProviderLaneUnavailable() {
+        let secret = "fixture-secret-flash-lane"
+        let flash = OpenCodeGoBridgeErrorNormalizer.normalize(
+            OpenCodeGoBridgeError.upstreamRejected,
+            upstreamStatusCode: 500,
+            upstreamErrorBody: Data(secret.utf8),
+            model: "deepseek-v4-flash"
+        )
+        let otherModel = OpenCodeGoBridgeErrorNormalizer.normalize(
+            OpenCodeGoBridgeError.upstreamRejected,
+            upstreamStatusCode: 500,
+            upstreamErrorBody: Data(secret.utf8),
+            model: "deepseek-v4-pro"
+        )
+
+        XCTAssertEqual(flash.statusCode, 502)
+        XCTAssertEqual(flash.code, "upstream_deepseek_v4_flash_lane_unavailable")
+        XCTAssertEqual(flash.providerStatus, .deepSeekV4FlashLaneUnavailable)
+        XCTAssertFalse(flash.message.contains(secret))
+        XCTAssertEqual(otherModel.code, "upstream_unavailable")
+        XCTAssertNil(otherModel.providerStatus)
     }
 
     func testPreserveApplyConfiguresBridgeBeforeWritingAndKeepsCredentialOutOfFiles() throws {

@@ -83,16 +83,29 @@ public enum OpenCodeGoBridgeError: LocalizedError, Equatable, Sendable {
     }
 }
 
+/// A narrowly scoped provider-lane state that can be diagnosed without
+/// retaining or exposing an upstream response body.
+public enum OpenCodeGoProviderStatusCategory: String, Codable, Equatable, Sendable {
+    case deepSeekV4FlashLaneUnavailable = "deepseek_v4_flash_lane_unavailable"
+}
+
 /// A sanitized error suitable for a local HTTP response or Responses SSE event.
 public struct OpenCodeGoNormalizedError: Equatable, Sendable {
     public let statusCode: Int
     public let code: String
     public let message: String
+    public let providerStatus: OpenCodeGoProviderStatusCategory?
 
-    public init(statusCode: Int, code: String, message: String) {
+    public init(
+        statusCode: Int,
+        code: String,
+        message: String,
+        providerStatus: OpenCodeGoProviderStatusCategory? = nil
+    ) {
         self.statusCode = statusCode
         self.code = code
         self.message = message
+        self.providerStatus = providerStatus
     }
 }
 
@@ -101,9 +114,16 @@ public enum OpenCodeGoBridgeErrorNormalizer {
     public static func normalize(
         _ error: Error,
         upstreamStatusCode: Int? = nil,
-        upstreamErrorBody: Data? = nil
+        upstreamErrorBody: Data? = nil,
+        model: String? = nil
     ) -> OpenCodeGoNormalizedError {
         if let upstreamStatusCode {
+            if let providerStatus = providerStatus(
+                for: model,
+                upstreamStatusCode: upstreamStatusCode
+            ) {
+                return normalizedProviderStatus(providerStatus)
+            }
             switch upstreamStatusCode {
             case 400:
                 return normalizedInvalidUpstreamRequest(from: upstreamErrorBody)
@@ -248,7 +268,16 @@ public enum OpenCodeGoBridgeErrorNormalizer {
     private static func normalizedInvalidUpstreamRequest(
         from upstreamErrorBody: Data?
     ) -> OpenCodeGoNormalizedError {
-        let fields = upstreamErrorFields(from: upstreamErrorBody)
+        guard let fields = upstreamErrorFields(from: upstreamErrorBody) else {
+            // The category and status are fixed allowlisted text. The opaque
+            // body, including malformed JSON and oversized payloads, is never
+            // copied into logs, metrics, or the response to Codex.
+            return OpenCodeGoNormalizedError(
+                statusCode: 400,
+                code: "upstream_invalid_request_opaque_http_400",
+                message: "OpenCode Go rejected the converted request (HTTP 400; upstream detail unavailable)."
+            )
+        }
         if matchesReasoningContentRequirement(fields) {
             return OpenCodeGoNormalizedError(
                 statusCode: 400,
@@ -263,11 +292,58 @@ public enum OpenCodeGoBridgeErrorNormalizer {
                 message: "OpenCode Go rejected an unsupported parameter or tool schema."
             )
         }
+        if matchesDeepSeekThinkingToolChoice(fields) {
+            return OpenCodeGoNormalizedError(
+                statusCode: 400,
+                code: "upstream_thinking_tool_choice_unsupported",
+                message: "OpenCode Go DeepSeek thinking mode rejected this tool_choice."
+            )
+        }
+        if matchesResponseFormatRequirement(fields) {
+            return OpenCodeGoNormalizedError(
+                statusCode: 400,
+                code: "upstream_response_format_unsupported",
+                message: "OpenCode Go rejected response_format for this request."
+            )
+        }
         return OpenCodeGoNormalizedError(
             statusCode: 400,
             code: "upstream_invalid_request",
             message: "OpenCode Go rejected the converted request."
         )
+    }
+
+    /// Public OpenCode reports show a model-specific service lane failure for
+    /// DeepSeek V4 Flash. Restrict this classification to 5xx statuses: a 400
+    /// still has a plausible request-shape cause and a 403 may be a genuine
+    /// entitlement failure, so neither is relabeled as a provider outage.
+    private static func providerStatus(
+        for model: String?,
+        upstreamStatusCode: Int
+    ) -> OpenCodeGoProviderStatusCategory? {
+        guard
+            let model,
+            (500...599).contains(upstreamStatusCode),
+            model.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("deepseek-v4-flash") == .orderedSame
+        else {
+            return nil
+        }
+        return .deepSeekV4FlashLaneUnavailable
+    }
+
+    private static func normalizedProviderStatus(
+        _ providerStatus: OpenCodeGoProviderStatusCategory
+    ) -> OpenCodeGoNormalizedError {
+        switch providerStatus {
+        case .deepSeekV4FlashLaneUnavailable:
+            return OpenCodeGoNormalizedError(
+                statusCode: 502,
+                code: "upstream_deepseek_v4_flash_lane_unavailable",
+                message: "The OpenCode Go DeepSeek V4 Flash lane is temporarily unavailable.",
+                providerStatus: providerStatus
+            )
+        }
     }
 
     private static func upstreamErrorFields(
@@ -344,6 +420,25 @@ public enum OpenCodeGoBridgeErrorNormalizer {
         // parameter or schema error. `param` remains useful for providers
         // that put the tool field there and a shorter marker in `code`.
         return true
+    }
+
+    private static func matchesDeepSeekThinkingToolChoice(
+        _ fields: OpenCodeGoUpstreamErrorFields?
+    ) -> Bool {
+        let values = fields?.normalizedValues ?? []
+        return values.contains {
+            $0.contains("thinking mode does not support this tool_choice")
+                || ($0.contains("thinking") && $0.contains("tool_choice"))
+        }
+    }
+
+    private static func matchesResponseFormatRequirement(
+        _ fields: OpenCodeGoUpstreamErrorFields?
+    ) -> Bool {
+        let values = fields?.normalizedValues ?? []
+        return values.contains {
+            $0.contains("response_format") || $0.contains("json_object")
+        }
     }
 }
 

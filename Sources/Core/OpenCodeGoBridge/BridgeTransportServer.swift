@@ -15,7 +15,7 @@ public final class URLSessionOpenCodeGoBridgeTransport: OpenCodeGoBridgeTranspor
     }
 
     public func execute(_ request: URLRequest) async throws -> OpenCodeGoBridgeTransportResponse {
-        let (body, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OpenCodeGoBridgeError.upstreamUnavailable
         }
@@ -23,6 +23,13 @@ public final class URLSessionOpenCodeGoBridgeTransport: OpenCodeGoBridgeTranspor
         for (key, value) in httpResponse.allHeaderFields {
             if let key = key as? String, let value = value as? String {
                 headers[key.lowercased()] = value
+            }
+        }
+        var body = Data()
+        for try await byte in bytes {
+            body.append(byte)
+            if body.count > 16 * 1024 * 1024 {
+                throw OpenCodeGoBridgeError.invalidUpstreamResponse
             }
         }
         return OpenCodeGoBridgeTransportResponse(
@@ -168,10 +175,30 @@ private struct OpenCodeGoBridgeHTTPRequest: Sendable {
     let body: Data
 }
 
-private struct OpenCodeGoBridgeHTTPResponse: Sendable {
+private struct OpenCodeGoBridgeHTTPResponse: @unchecked Sendable {
     let statusCode: Int
     let headers: [String: String]
     let body: Data
+    /// Precomputed chunk list for simple multi-part SSE writes.
+    let bodyChunks: [Data]
+    /// Progressive SSE body. When set, the loopback writer uses chunked
+    /// transfer and pulls chunks as the producer yields them — so Codex can
+    /// receive `response.created` while upstream Chat Completions is still running.
+    let bodyStream: AsyncStream<Data>?
+
+    init(
+        statusCode: Int,
+        headers: [String: String],
+        body: Data,
+        bodyChunks: [Data] = [],
+        bodyStream: AsyncStream<Data>? = nil
+    ) {
+        self.statusCode = statusCode
+        self.headers = headers
+        self.body = body
+        self.bodyChunks = bodyChunks
+        self.bodyStream = bodyStream
+    }
 
     static func health() -> OpenCodeGoBridgeHTTPResponse {
         OpenCodeGoBridgeHTTPResponse(
@@ -203,6 +230,36 @@ private struct OpenCodeGoBridgeHTTPResponse: Sendable {
                 "Cache-Control": "no-cache"
             ],
             body: body
+        )
+    }
+
+    static func sseChunks(
+        statusCode: Int = 200,
+        chunks: [Data]
+    ) -> OpenCodeGoBridgeHTTPResponse {
+        OpenCodeGoBridgeHTTPResponse(
+            statusCode: statusCode,
+            headers: [
+                "Content-Type": "text/event-stream; charset=utf-8",
+                "Cache-Control": "no-cache"
+            ],
+            body: Data(),
+            bodyChunks: chunks.filter { !$0.isEmpty }
+        )
+    }
+
+    static func sseStream(
+        statusCode: Int = 200,
+        _ stream: AsyncStream<Data>
+    ) -> OpenCodeGoBridgeHTTPResponse {
+        OpenCodeGoBridgeHTTPResponse(
+            statusCode: statusCode,
+            headers: [
+                "Content-Type": "text/event-stream; charset=utf-8",
+                "Cache-Control": "no-cache"
+            ],
+            body: Data(),
+            bodyStream: stream
         )
     }
 
@@ -503,49 +560,80 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
         upstreamRequest.setValue("text/event-stream, application/json", forHTTPHeaderField: "Accept")
         upstreamRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
 
-        do {
-            let upstream = try await transport.execute(upstreamRequest)
-            guard (200..<300).contains(upstream.statusCode) else {
-                let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
-                    OpenCodeGoBridgeError.upstreamRejected,
-                    upstreamStatusCode: upstream.statusCode,
-                    upstreamErrorBody: upstream.body
+        let responseID = "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let model = converted.model
+        let toolContext = converted.toolContext
+        let outputMode = converted.outputMode
+        let transport = self.transport
+        let toolCallCache = self.toolCallCache
+        let (stream, continuation) = AsyncStream<Data>.makeStream()
+
+        // Progressive SSE: yield response.created/in_progress before awaiting
+        // upstream, matching the early-flush intent of cc-switch streaming.
+        // Full token-delta conversion during upstream read remains follow-up work;
+        // terminal events still come from the shared buffered encoder.
+        Task {
+            do {
+                continuation.yield(
+                    try OpenCodeGoStreamingChatBridge.earlyLifecycleSSE(
+                        responseID: responseID,
+                        model: model
+                    )
                 )
-                return .sse(
-                    statusCode: normalized.statusCode,
-                    body: OpenCodeGoResponsesEventEncoder.failure(
-                        responseID: "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
-                        model: converted.model,
-                        normalizedError: normalized
+                let upstream = try await transport.execute(upstreamRequest)
+                guard (200..<300).contains(upstream.statusCode) else {
+                    let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+                        OpenCodeGoBridgeError.upstreamRejected,
+                        upstreamStatusCode: upstream.statusCode,
+                        upstreamErrorBody: upstream.body,
+                        model: model
+                    )
+                    continuation.yield(
+                        OpenCodeGoStreamingChatBridge.stripLeadingLifecycle(
+                            from: OpenCodeGoResponsesEventEncoder.failure(
+                                responseID: responseID,
+                                model: model,
+                                normalizedError: normalized
+                            )
+                        )
+                    )
+                    continuation.finish()
+                    return
+                }
+
+                let conversion = try OpenCodeGoChatResponseConverter.convert(
+                    chatResponse: upstream.body,
+                    contentType: upstream.headers["content-type"],
+                    fallbackModel: model,
+                    toolContext: toolContext,
+                    outputMode: outputMode,
+                    preferredResponseID: responseID
+                )
+                toolCallCache.store(
+                    responseID: conversion.responseID,
+                    toolCalls: conversion.toolCalls,
+                    reasoningContent: conversion.reasoningContent,
+                    reasoningContentPresent: conversion.reasoningContentPresent
+                )
+                continuation.yield(
+                    OpenCodeGoStreamingChatBridge.stripLeadingLifecycle(from: conversion.sse)
+                )
+            } catch {
+                let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(error)
+                continuation.yield(
+                    OpenCodeGoStreamingChatBridge.stripLeadingLifecycle(
+                        from: OpenCodeGoResponsesEventEncoder.failure(
+                            responseID: responseID,
+                            model: model,
+                            normalizedError: normalized
+                        )
                     )
                 )
             }
-
-            let conversion = try OpenCodeGoChatResponseConverter.convert(
-                chatResponse: upstream.body,
-                contentType: upstream.headers["content-type"],
-                fallbackModel: converted.model,
-                toolContext: converted.toolContext,
-                outputMode: converted.outputMode
-            )
-            toolCallCache.store(
-                responseID: conversion.responseID,
-                toolCalls: conversion.toolCalls,
-                reasoningContent: conversion.reasoningContent,
-                reasoningContentPresent: conversion.reasoningContentPresent
-            )
-            return .sse(body: conversion.sse)
-        } catch {
-            let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(error)
-            return .sse(
-                statusCode: normalized.statusCode,
-                body: OpenCodeGoResponsesEventEncoder.failure(
-                    responseID: "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
-                    model: converted.model,
-                    normalizedError: normalized
-                )
-            )
+            continuation.finish()
         }
+
+        return .sseStream(stream)
     }
 
     private func handleResponsesPassthrough(
@@ -838,8 +926,10 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
         switch Self.readRequest(from: descriptor) {
         case .success(let request):
             handler.handle(request) { response in
-                Self.write(response, to: descriptor)
-                _ = Darwin.close(descriptor)
+                Task {
+                    await Self.writeAsync(response, to: descriptor)
+                    _ = Darwin.close(descriptor)
+                }
             }
         case .failure(let error):
             Self.write(.normalizedError(error), to: descriptor)
@@ -966,10 +1056,22 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
         return Data(buffer.prefix(Int(count)))
     }
 
-    private static func write(
+    private static func writeAsync(
         _ response: OpenCodeGoBridgeHTTPResponse,
         to descriptor: Int32
-    ) {
+    ) async {
+        if let bodyStream = response.bodyStream {
+            await writeChunkedStream(response, stream: bodyStream, to: descriptor)
+            return
+        }
+        write(response, to: descriptor)
+    }
+
+    private static func writeChunkedStream(
+        _ response: OpenCodeGoBridgeHTTPResponse,
+        stream: AsyncStream<Data>,
+        to descriptor: Int32
+    ) async {
         let statusText: String
         switch response.statusCode {
         case 200: statusText = "OK"
@@ -991,11 +1093,76 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
         for (name, value) in response.headers {
             headerText += "\(name): \(value)\r\n"
         }
-        headerText += "Content-Length: \(response.body.count)\r\n"
+        headerText += "Transfer-Encoding: chunked\r\n"
+        headerText += "Connection: close\r\n\r\n"
+        guard sendAll(Data(headerText.utf8), to: descriptor) else {
+            return
+        }
+
+        for await chunk in stream {
+            guard sendChunk(chunk, to: descriptor) else {
+                return
+            }
+        }
+        _ = sendAll(Data("0\r\n\r\n".utf8), to: descriptor)
+    }
+
+    private static func write(
+        _ response: OpenCodeGoBridgeHTTPResponse,
+        to descriptor: Int32
+    ) {
+        let statusText: String
+        switch response.statusCode {
+        case 200: statusText = "OK"
+        case 400: statusText = "Bad Request"
+        case 401: statusText = "Unauthorized"
+        case 404: statusText = "Not Found"
+        case 405: statusText = "Method Not Allowed"
+        case 411: statusText = "Length Required"
+        case 413: statusText = "Payload Too Large"
+        case 415: statusText = "Unsupported Media Type"
+        case 429: statusText = "Too Many Requests"
+        case 502: statusText = "Bad Gateway"
+        case 503: statusText = "Service Unavailable"
+        case 504: statusText = "Gateway Timeout"
+        default: statusText = "Internal Server Error"
+        }
+
+        let useChunked = !response.bodyChunks.isEmpty
+        var headerText = "HTTP/1.1 \(response.statusCode) \(statusText)\r\n"
+        for (name, value) in response.headers {
+            headerText += "\(name): \(value)\r\n"
+        }
+        if useChunked {
+            headerText += "Transfer-Encoding: chunked\r\n"
+        } else {
+            headerText += "Content-Length: \(response.body.count)\r\n"
+        }
         headerText += "Connection: close\r\n\r\n"
 
         _ = sendAll(Data(headerText.utf8), to: descriptor)
-        _ = sendAll(response.body, to: descriptor)
+        if useChunked {
+            for chunk in response.bodyChunks {
+                _ = sendChunk(chunk, to: descriptor)
+            }
+            _ = sendAll(Data("0\r\n\r\n".utf8), to: descriptor)
+        } else {
+            _ = sendAll(response.body, to: descriptor)
+        }
+    }
+
+    private static func sendChunk(_ data: Data, to descriptor: Int32) -> Bool {
+        guard !data.isEmpty else {
+            return true
+        }
+        let header = String(format: "%x\r\n", data.count)
+        guard sendAll(Data(header.utf8), to: descriptor) else {
+            return false
+        }
+        guard sendAll(data, to: descriptor) else {
+            return false
+        }
+        return sendAll(Data("\r\n".utf8), to: descriptor)
     }
 
     private static func sendAll(_ data: Data, to descriptor: Int32) -> Bool {
