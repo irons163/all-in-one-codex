@@ -38,6 +38,9 @@ public enum OpenCodeGoChatResponseConverter {
         let separated = OpenCodeGoReasoningTagExtractor.extract(from: accumulation.text)
         let reasoning = accumulation.reasoning + separated.reasoning
         let model = accumulation.model ?? fallbackModel
+        let reasoningContentPresent = accumulation.reasoningContentPresent ||
+            !reasoning.isEmpty ||
+            (!toolCalls.isEmpty && model.lowercased().contains("deepseek-v4"))
         let createdAt = accumulation.createdAt ?? Int(Date().timeIntervalSince1970)
         let usage = normalizedUsage(accumulation.usage)
         let sse: Data
@@ -75,7 +78,8 @@ public enum OpenCodeGoChatResponseConverter {
             responseID: responseID,
             sse: sse,
             toolCalls: toolCalls,
-            reasoningContent: reasoning.isEmpty ? nil : reasoning
+            reasoningContent: reasoningContentPresent ? reasoning : nil,
+            reasoningContentPresent: reasoningContentPresent
         )
     }
 
@@ -187,6 +191,7 @@ private struct OpenCodeGoChatCompletionAccumulation {
     var createdAt: Int?
     var text = ""
     var reasoning = ""
+    var reasoningContentPresent = false
     var usage: [String: Any]?
     var finishReason: String?
     var sawCompletion = false
@@ -235,11 +240,16 @@ private struct OpenCodeGoChatCompletionAccumulation {
                 ?? [:]
 
             text += contentString(payloadMessage["content"])
-            reasoning += contentString(
-                payloadMessage["reasoning_content"]
-                    ?? payloadMessage["reasoning"]
-                    ?? payloadMessage["reasoning_text"]
-            )
+            if let rawReasoning = payloadMessage["reasoning_content"] {
+                reasoningContentPresent = true
+                reasoning += contentString(rawReasoning)
+            } else if let rawReasoning = payloadMessage["reasoning"] {
+                reasoningContentPresent = true
+                reasoning += contentString(rawReasoning)
+            } else if let rawReasoning = payloadMessage["reasoning_text"] {
+                reasoningContentPresent = true
+                reasoning += contentString(rawReasoning)
+            }
 
             if let toolCalls = payloadMessage["tool_calls"] as? [[String: Any]] {
                 for (toolOffset, toolCall) in toolCalls.enumerated() {

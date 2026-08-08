@@ -1239,6 +1239,195 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(messages[1]["content"] as? String, "Sunny")
     }
 
+    func testDeepSeekToolCallWithoutReasoningReplaysExplicitEmptyReasoningContent() throws {
+        let upstream = """
+        {
+          "id": "chatcmpl_deepseek_empty_reasoning",
+          "model": "deepseek-v4-flash",
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "tool_calls": [{
+                "id": "call_lookup",
+                "type": "function",
+                "function": {"name": "lookup_weather", "arguments": "{}"}
+              }]
+            },
+            "finish_reason": "tool_calls"
+          }]
+        }
+        """
+        let responseConversion = try OpenCodeGoChatResponseConverter.convert(
+            chatResponse: Data(upstream.utf8),
+            fallbackModel: "deepseek-v4-flash"
+        )
+        let cache = OpenCodeGoToolCallCache()
+        cache.store(
+            responseID: responseConversion.responseID,
+            toolCalls: responseConversion.toolCalls,
+            reasoningContent: responseConversion.reasoningContent
+        )
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "previous_response_id": responseConversion.responseID,
+            "input": [[
+                "type": "function_call_output",
+                "call_id": "call_lookup",
+                "output": "Sunny"
+            ]]
+        ]
+        let requestConversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request),
+            toolCallCache: cache
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestConversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+
+        XCTAssertEqual(responseConversion.reasoningContent, "")
+        XCTAssertTrue(responseConversion.reasoningContentPresent)
+        XCTAssertTrue(cache.history(for: responseConversion.responseID)?.reasoningContentPresent == true)
+        XCTAssertTrue(messages[0].keys.contains("reasoning_content"))
+        XCTAssertEqual(messages[0]["reasoning_content"] as? String, "")
+    }
+
+    func testDeepSeekToolCallWithReasoningRoundTripsContent() throws {
+        let upstream = """
+        {
+          "id": "chatcmpl_deepseek_reasoning",
+          "model": "deepseek-v4-flash",
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "reasoning_content": "I should inspect the weather source.",
+              "tool_calls": [{
+                "id": "call_lookup",
+                "type": "function",
+                "function": {"name": "lookup_weather", "arguments": "{}"}
+              }]
+            },
+            "finish_reason": "tool_calls"
+          }]
+        }
+        """
+        let responseConversion = try OpenCodeGoChatResponseConverter.convert(
+            chatResponse: Data(upstream.utf8),
+            fallbackModel: "deepseek-v4-flash"
+        )
+        let cache = OpenCodeGoToolCallCache()
+        cache.store(
+            responseID: responseConversion.responseID,
+            toolCalls: responseConversion.toolCalls,
+            reasoningContent: responseConversion.reasoningContent
+        )
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "previous_response_id": responseConversion.responseID,
+            "input": [[
+                "type": "function_call_output",
+                "call_id": "call_lookup",
+                "output": "Sunny"
+            ]]
+        ]
+        let requestConversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request),
+            toolCallCache: cache
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestConversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+
+        XCTAssertTrue(responseConversion.reasoningContentPresent)
+        XCTAssertEqual(
+            messages[0]["reasoning_content"] as? String,
+            "I should inspect the weather source."
+        )
+    }
+
+    func testPreservesExplicitEmptyAssistantReasoningContentWithoutSynthesizingIt() throws {
+        let explicitRequest: [String: Any] = [
+            "model": "glm-5.2",
+            "input": [[
+                "role": "assistant",
+                "content": "I will continue.",
+                "reasoning_content": ""
+            ]]
+        ]
+        let explicitConversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: explicitRequest)
+        )
+        let explicitChat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: explicitConversion.body) as? [String: Any]
+        )
+        let explicitMessage = try XCTUnwrap(
+            (explicitChat["messages"] as? [[String: Any]])?.first
+        )
+
+        let ordinaryRequest: [String: Any] = [
+            "model": "glm-5.2",
+            "input": [["role": "assistant", "content": "I will continue."]]
+        ]
+        let ordinaryConversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: ordinaryRequest)
+        )
+        let ordinaryChat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: ordinaryConversion.body) as? [String: Any]
+        )
+        let ordinaryMessage = try XCTUnwrap(
+            (ordinaryChat["messages"] as? [[String: Any]])?.first
+        )
+
+        XCTAssertTrue(explicitMessage.keys.contains("reasoning_content"))
+        XCTAssertEqual(explicitMessage["reasoning_content"] as? String, "")
+        XCTAssertFalse(ordinaryMessage.keys.contains("reasoning_content"))
+    }
+
+    func testCacheDoesNotCreateHistoryForOrdinaryTextResponses() throws {
+        let upstream = """
+        {
+          "id": "chatcmpl_text_reasoning",
+          "model": "deepseek-v4-flash",
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "content": "The weather is sunny.",
+              "reasoning_content": "No tool is required."
+            },
+            "finish_reason": "stop"
+          }]
+        }
+        """
+        let responseConversion = try OpenCodeGoChatResponseConverter.convert(
+            chatResponse: Data(upstream.utf8),
+            fallbackModel: "deepseek-v4-flash"
+        )
+        let cache = OpenCodeGoToolCallCache()
+        cache.store(
+            responseID: responseConversion.responseID,
+            toolCalls: responseConversion.toolCalls,
+            reasoningContent: responseConversion.reasoningContent
+        )
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "previous_response_id": responseConversion.responseID,
+            "input": "What next?"
+        ]
+        let requestConversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request),
+            toolCallCache: cache
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestConversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+
+        XCTAssertTrue(responseConversion.toolCalls.isEmpty)
+        XCTAssertNil(cache.history(for: responseConversion.responseID))
+        XCTAssertEqual(messages.map { $0["role"] as? String }, ["user"])
+    }
+
     func testKeepsToolHistoryBoundedWhileRetainingReasoning() {
         let cache = OpenCodeGoToolCallCache(capacity: 1)
         cache.store(

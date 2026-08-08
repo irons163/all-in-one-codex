@@ -32,13 +32,12 @@ public enum OpenCodeGoResponsesRequestConverter {
 
         let previousResponseID = root["previous_response_id"] as? String
         let cachedHistory = previousResponseID.flatMap { toolCallCache?.history(for: $0) }
-        if let cachedHistory,
-           !cachedHistory.toolCalls.isEmpty || cachedHistory.reasoningContent?.isEmpty == false
-        {
+        if let cachedHistory, !cachedHistory.toolCalls.isEmpty {
             conversationMessages.append(
                 assistantToolCallMessage(
                     cachedHistory.toolCalls,
-                    reasoningContent: cachedHistory.reasoningContent
+                    reasoningContent: cachedHistory.reasoningContent,
+                    reasoningContentPresent: cachedHistory.reasoningContentPresent
                 )
             )
         }
@@ -180,7 +179,14 @@ public enum OpenCodeGoResponsesRequestConverter {
             guard let toolCall = toolCall(from: inputItem, toolContext: toolContext, kind: type) else {
                 throw OpenCodeGoBridgeError.invalidRequest
             }
-            conversationMessages.append(assistantToolCallMessage([toolCall], reasoningContent: nil))
+            let reasoning = inputReasoningContent(from: inputItem)
+            conversationMessages.append(
+                assistantToolCallMessage(
+                    [toolCall],
+                    reasoningContent: reasoning.content,
+                    reasoningContentPresent: reasoning.isPresent
+                )
+            )
             return
         }
 
@@ -199,11 +205,11 @@ public enum OpenCodeGoResponsesRequestConverter {
         if role == "assistant", !convertedContent.toolCalls.isEmpty {
             message["tool_calls"] = convertedContent.toolCalls.map(chatToolCallObject)
         }
-        if role == "assistant",
-           let reasoning = stringValue(inputItem["reasoning_content"] ?? inputItem["reasoning"]),
-           !reasoning.isEmpty
-        {
-            message["reasoning_content"] = reasoning
+        if role == "assistant" {
+            let reasoning = inputReasoningContent(from: inputItem)
+            if reasoning.isPresent {
+                message["reasoning_content"] = reasoning.content ?? ""
+            }
         }
         if role == "tool" {
             guard let callID = stringValue(inputItem["call_id"] ?? inputItem["tool_call_id"]) else {
@@ -492,12 +498,30 @@ public enum OpenCodeGoResponsesRequestConverter {
 
     private static func assistantToolCallMessage(
         _ toolCalls: [OpenCodeGoToolCall],
-        reasoningContent: String?
+        reasoningContent: String?,
+        reasoningContentPresent: Bool = false
     ) -> [String: Any] {
         var message: [String: Any] = ["role": "assistant"]
         if !toolCalls.isEmpty { message["tool_calls"] = toolCalls.map(chatToolCallObject) }
-        if let reasoningContent, !reasoningContent.isEmpty { message["reasoning_content"] = reasoningContent }
+        if reasoningContentPresent || reasoningContent != nil {
+            message["reasoning_content"] = reasoningContent ?? ""
+        }
         return message
+    }
+
+    private static func inputReasoningContent(
+        from inputItem: [String: Any]
+    ) -> (content: String?, isPresent: Bool) {
+        if let rawReasoning = inputItem["reasoning_content"] {
+            guard let reasoning = stringValue(rawReasoning) else {
+                return (nil, false)
+            }
+            return (reasoning, true)
+        }
+        guard let reasoning = stringValue(inputItem["reasoning"]), !reasoning.isEmpty else {
+            return (nil, false)
+        }
+        return (reasoning, true)
     }
 
     private static func chatToolCallObject(_ toolCall: OpenCodeGoToolCall) -> [String: Any] {

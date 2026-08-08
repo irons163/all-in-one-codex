@@ -255,10 +255,18 @@ public struct OpenCodeGoToolCall: Codable, Hashable, Sendable {
 public struct OpenCodeGoToolCallHistory: Equatable, Sendable {
     public let toolCalls: [OpenCodeGoToolCall]
     public let reasoningContent: String?
+    /// Distinguishes an absent field from an explicitly empty
+    /// `reasoning_content` value required by some thinking models.
+    public let reasoningContentPresent: Bool
 
-    public init(toolCalls: [OpenCodeGoToolCall], reasoningContent: String? = nil) {
+    public init(
+        toolCalls: [OpenCodeGoToolCall],
+        reasoningContent: String? = nil,
+        reasoningContentPresent: Bool = false
+    ) {
         self.toolCalls = toolCalls
         self.reasoningContent = reasoningContent
+        self.reasoningContentPresent = reasoningContentPresent || reasoningContent != nil
     }
 }
 
@@ -277,10 +285,10 @@ public final class OpenCodeGoToolCallCache: @unchecked Sendable {
     public func store(
         responseID: String,
         toolCalls: [OpenCodeGoToolCall],
-        reasoningContent: String? = nil
+        reasoningContent: String? = nil,
+        reasoningContentPresent: Bool = false
     ) {
-        let normalizedReasoning = reasoningContent?.isEmpty == false ? reasoningContent : nil
-        guard !responseID.isEmpty, (!toolCalls.isEmpty || normalizedReasoning != nil) else {
+        guard !responseID.isEmpty, !toolCalls.isEmpty else {
             return
         }
 
@@ -290,7 +298,8 @@ public final class OpenCodeGoToolCallCache: @unchecked Sendable {
         insertionOrder.removeAll { $0 == responseID }
         entries[responseID] = OpenCodeGoToolCallHistory(
             toolCalls: toolCalls,
-            reasoningContent: normalizedReasoning
+            reasoningContent: reasoningContent,
+            reasoningContentPresent: reasoningContentPresent
         )
         insertionOrder.append(responseID)
 
@@ -416,17 +425,22 @@ public struct OpenCodeGoResponsesConversion: Sendable {
     public let sse: Data
     public let toolCalls: [OpenCodeGoToolCall]
     public let reasoningContent: String?
+    /// Whether the upstream completion supplied or requires a
+    /// `reasoning_content` field, including an explicit empty value.
+    public let reasoningContentPresent: Bool
 
     public init(
         responseID: String,
         sse: Data,
         toolCalls: [OpenCodeGoToolCall],
-        reasoningContent: String? = nil
+        reasoningContent: String? = nil,
+        reasoningContentPresent: Bool = false
     ) {
         self.responseID = responseID
         self.sse = sse
         self.toolCalls = toolCalls
         self.reasoningContent = reasoningContent
+        self.reasoningContentPresent = reasoningContentPresent || reasoningContent != nil
     }
 }
 
