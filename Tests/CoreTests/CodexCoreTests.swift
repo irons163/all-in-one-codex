@@ -163,6 +163,56 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertLessThan(activeMarker.lowerBound, firstTable.lowerBound)
     }
 
+    func testProjectionDisablesRequestCompressionInsideExistingFeaturesTable() throws {
+        let original = """
+        approval_policy = "never"
+
+        [features]
+        multi_agent = true
+        enable_request_compression = true # incompatible with the Chat bridge
+
+        [mcp_servers.example]
+        command = "example"
+        """
+        let projector = CodexConfigProjector()
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "deepseek-v4-flash"
+        )
+
+        let projected = try projector.project(original: original, profile: profile)
+        let projectedAgain = try projector.project(original: projected, profile: profile)
+
+        for output in [projected, projectedAgain] {
+            XCTAssertTrue(output.contains("[features]"))
+            XCTAssertTrue(output.contains("multi_agent = true"))
+            XCTAssertTrue(output.contains(CodexConfigProjector.compatibilityBeginMarker))
+            XCTAssertTrue(output.contains("enable_request_compression = false"))
+            XCTAssertFalse(output.contains("enable_request_compression = true"))
+            XCTAssertTrue(output.contains("[mcp_servers.example]"))
+            XCTAssertEqual(
+                output.components(separatedBy: "enable_request_compression =").count - 1,
+                1
+            )
+            XCTAssertEqual(
+                output.components(separatedBy: CodexConfigProjector.compatibilityBeginMarker).count - 1,
+                1
+            )
+        }
+    }
+
+    func testProjectionCreatesCompatibilityFeaturesTableWhenMissing() throws {
+        let projection = try CodexConfigProjector().project(
+            original: "approval_policy = \"never\"\n",
+            profile: makeProfile(presetID: .openRouter, model: "vendor/model")
+        )
+
+        XCTAssertTrue(projection.contains("[features]"))
+        XCTAssertTrue(projection.contains(CodexConfigProjector.compatibilityBeginMarker))
+        XCTAssertTrue(projection.contains("enable_request_compression = false"))
+        XCTAssertTrue(projection.contains(CodexConfigProjector.compatibilityEndMarker))
+    }
+
     func testProjectionRetainsMultilineUnknownTopLevelValues() throws {
         let original = #"""
         notes = """

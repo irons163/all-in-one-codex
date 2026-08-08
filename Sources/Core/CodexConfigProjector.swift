@@ -78,6 +78,8 @@ public struct CodexConfigProjector: Sendable {
     public static let openAIBaseURLMarker = "# ALL-IN-ONE-CODEX OPENAI BASE URL"
     public static let preserveProfileIDMarkerPrefix = "# ALL-IN-ONE-CODEX PRESERVE PROFILE ID: "
     public static let preservePresetMarkerPrefix = "# ALL-IN-ONE-CODEX PRESERVE PRESET: "
+    public static let compatibilityBeginMarker = "# BEGIN ALL-IN-ONE-CODEX COMPATIBILITY"
+    public static let compatibilityEndMarker = "# END ALL-IN-ONE-CODEX COMPATIBILITY"
     public static let providersBeginMarker = "# BEGIN ALL-IN-ONE-CODEX PROVIDERS"
     public static let providersEndMarker = "# END ALL-IN-ONE-CODEX PROVIDERS"
 
@@ -105,6 +107,11 @@ public struct CodexConfigProjector: Sendable {
             beginMarker: Self.providersBeginMarker,
             endMarker: Self.providersEndMarker
         )
+        let compatibilityRange = try Self.managedRange(
+            in: originalLines,
+            beginMarker: Self.compatibilityBeginMarker,
+            endMarker: Self.compatibilityEndMarker
+        )
 
         if let activeRange, let firstTable = Self.firstTableIndex(in: originalLines) {
             guard activeRange.lowerBound < firstTable, activeRange.upperBound < firstTable else {
@@ -129,6 +136,9 @@ public struct CodexConfigProjector: Sendable {
         if let providersRange {
             indicesToRemove.formUnion(providersRange)
         }
+        if let compatibilityRange {
+            indicesToRemove.formUnion(compatibilityRange)
+        }
 
         var lines = originalLines.enumerated().compactMap { index, line in
             indicesToRemove.contains(index) ? nil : line
@@ -144,6 +154,13 @@ public struct CodexConfigProjector: Sendable {
             }
             lines.append(contentsOf: activeBlock)
         }
+
+        // Codex compresses sufficiently large Responses requests with zstd.
+        // Chat-only bridge routes must inspect the JSON body before converting
+        // it, so app-managed provider configurations disable request-body
+        // compression. This remains harmless for native Responses routes and
+        // avoids changing behavior when switching profiles within the app.
+        lines = Self.disablingRequestCompression(in: lines)
 
         if !profile.preserveSessions {
             if !lines.isEmpty, lines.last?.isEmpty == false {
@@ -280,6 +297,83 @@ public struct CodexConfigProjector: Sendable {
             return trimmed.hasSuffix("]]")
         }
         return trimmed.hasSuffix("]")
+    }
+
+    private static func tomlTableName(_ line: String) -> String? {
+        let trimmed = codeBeforeComment(in: line).trimmingCharacters(in: .whitespaces)
+        guard
+            trimmed.hasPrefix("["),
+            trimmed.hasSuffix("]"),
+            !trimmed.hasPrefix("[[")
+        else {
+            return nil
+        }
+        return String(trimmed.dropFirst().dropLast())
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func tomlAssignmentKey(_ line: String) -> String? {
+        let code = codeBeforeComment(in: line).trimmingCharacters(in: .whitespaces)
+        guard
+            !code.isEmpty,
+            !code.hasPrefix("#"),
+            !code.hasPrefix("["),
+            let equalsIndex = code.firstIndex(of: "=")
+        else {
+            return nil
+        }
+        return code[..<equalsIndex]
+            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    }
+
+    private static func disablingRequestCompression(in input: [String]) -> [String] {
+        var lines = input
+        let compatibilityBlock = [
+            compatibilityBeginMarker,
+            "enable_request_compression = false",
+            compatibilityEndMarker
+        ]
+
+        if let featuresIndex = lines.indices.first(where: {
+            tomlTableName(lines[$0]) == "features"
+        }) {
+            let initialTableEnd = lines.indices.first(where: {
+                $0 > featuresIndex && isTomlTableHeader(lines[$0])
+            }) ?? lines.endIndex
+            let existingAssignments = lines.indices.filter {
+                $0 > featuresIndex &&
+                    $0 < initialTableEnd &&
+                    tomlAssignmentKey(lines[$0]) == "enable_request_compression"
+            }
+            for index in existingAssignments.reversed() {
+                lines.remove(at: index)
+            }
+
+            let tableEnd = lines.indices.first(where: {
+                $0 > featuresIndex && isTomlTableHeader(lines[$0])
+            }) ?? lines.endIndex
+            var insertionIndex = tableEnd
+            while insertionIndex > featuresIndex + 1,
+                  lines[insertionIndex - 1].trimmingCharacters(in: .whitespaces).isEmpty
+            {
+                insertionIndex -= 1
+            }
+
+            var block = compatibilityBlock
+            if insertionIndex < lines.endIndex {
+                block.append("")
+            }
+            lines.insert(contentsOf: block, at: insertionIndex)
+            return lines
+        }
+
+        if !lines.isEmpty, lines.last?.isEmpty == false {
+            lines.append("")
+        }
+        lines.append("[features]")
+        lines.append(contentsOf: compatibilityBlock)
+        return lines
     }
 
     private static func codeBeforeComment(in line: String) -> String {

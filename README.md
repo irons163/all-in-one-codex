@@ -53,6 +53,12 @@ task 可能在切換後暫時看不到。開啟 profile 的「保留既有 Codex
 Responses ↔ Chat Completions 轉換。All-in-One Codex 必須持續開啟；Apply 後
 仍需完全退出並重啟 Codex，再從既有 task 清單重新開啟 session。
 
+All-in-One Codex 也會在 app-owned compatibility block 中設定
+`features.enable_request_compression = false`。Codex 對較大的 Responses request
+可能使用 zstd 壓縮；Chat-only bridge 必須先讀取 JSON 才能轉成 Chat
+Completions，因此需停用 request-body compression。Undo 或 Restore Backup
+會隨完整 `config.toml` transaction 一併復原原設定。
+
 ## Provider routing
 
 ### OpenCode Go
