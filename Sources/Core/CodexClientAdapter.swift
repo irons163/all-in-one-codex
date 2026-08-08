@@ -27,6 +27,7 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
 
 /// UI-facing operations supported by a client integration.
 public protocol ClientAdapter {
+    var bridgeStatus: OpenCodeGoBridgeStatus { get }
     func prepareForUse() throws
     func preview(profile: ProviderProfile) throws -> SwitchPreview
     func apply(profile: ProviderProfile) throws -> SwitchReceipt
@@ -35,6 +36,10 @@ public protocol ClientAdapter {
 
 /// Adapters without a local service have no launch preparation to perform.
 public extension ClientAdapter {
+    var bridgeStatus: OpenCodeGoBridgeStatus {
+        .stopped
+    }
+
     func prepareForUse() throws {}
 }
 
@@ -50,6 +55,10 @@ public struct CodexClientAdapter: ClientAdapter {
     private let credentialStore: any CredentialStoring
     private let projector: CodexConfigProjector
     private let bridgeManager: any OpenCodeGoBridgeManaging
+
+    public var bridgeStatus: OpenCodeGoBridgeStatus {
+        bridgeManager.status
+    }
 
     public init(
         configURL: URL = CodexClientAdapter.defaultConfigURL,

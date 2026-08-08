@@ -119,6 +119,7 @@ private struct ProfileRow: View {
         HStack(spacing: 10) {
             Image(systemName: item.isActive ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(item.isActive ? .green : .secondary)
+                .accessibilityLabel(item.isActive ? "已套用" : "未套用")
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name)
@@ -132,10 +133,11 @@ private struct ProfileRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                if item.requiresLoopbackBridge {
-                    Label("需要本機 bridge", systemImage: "arrow.left.arrow.right")
+                if item.requiresLoopbackBridge,
+                   let bridgeStatus = item.bridgeStatus
+                {
+                    BridgeStatusBadge(status: bridgeStatus)
                         .font(.caption2)
-                        .foregroundStyle(.orange)
                 }
             }
 
@@ -144,8 +146,46 @@ private struct ProfileRow: View {
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(item.name), \(item.providerName), \(item.model), \(item.isActive ? "active" : "inactive")"
+            "\(item.name), \(item.providerName), \(item.model), \(item.isActive ? "已套用" : "未套用")"
         )
+    }
+}
+
+struct BridgeStatusBadge: View {
+    let status: OpenCodeGoBridgeStatus
+
+    var body: some View {
+        Label(status.displayName, systemImage: status.systemImage)
+            .foregroundStyle(status.tint)
+    }
+}
+
+private extension OpenCodeGoBridgeStatus {
+    var displayName: String {
+        switch self {
+        case .running:
+            return "Bridge：執行中"
+        case .stopped:
+            return "Bridge：未啟動"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .running:
+            return "checkmark.circle.fill"
+        case .stopped:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .running:
+            return .green
+        case .stopped:
+            return .orange
+        }
     }
 }
 

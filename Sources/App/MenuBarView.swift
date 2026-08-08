@@ -20,13 +20,11 @@ struct MenuBarView: View {
                                 Text(item.name)
                                 Text(item.providerName)
                                     .foregroundStyle(.secondary)
-                                if item.requiresLoopbackBridge {
-                                    Label(
-                                        "需要本機 bridge",
-                                        systemImage: "arrow.left.arrow.right"
-                                    )
+                                if item.requiresLoopbackBridge,
+                                   let bridgeStatus = item.bridgeStatus
+                                {
+                                    BridgeStatusBadge(status: bridgeStatus)
                                     .font(.caption2)
-                                    .foregroundStyle(.orange)
                                 }
                             }
                         }

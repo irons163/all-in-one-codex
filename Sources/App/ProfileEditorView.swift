@@ -61,6 +61,14 @@ struct ProfileEditorView: View {
                         .multilineTextAlignment(.trailing)
                 }
 
+                if route.bridgeEnabled,
+                   let bridgeStatus = route.bridgeStatus
+                {
+                    LabeledContent("Bridge") {
+                        BridgeStatusBadge(status: bridgeStatus)
+                    }
+                }
+
                 LabeledContent("Endpoint") {
                     Text(route.endpoint)
                         .foregroundStyle(.secondary)
@@ -88,7 +96,11 @@ struct ProfileEditorView: View {
 
                 Text(route.explanation)
                     .font(.caption)
-                    .foregroundStyle(route.bridgeEnabled ? Color.orange : Color.secondary)
+                    .foregroundStyle(
+                        route.bridgeEnabled && route.bridgeStatus != .running
+                            ? Color.orange
+                            : Color.secondary
+                    )
 
                 if !route.isKnown {
                     Label(
@@ -117,12 +129,15 @@ struct ProfileEditorView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                 case .saved:
-                    Label(
-                        "API key 已儲存；不會在畫面中顯示。",
-                        systemImage: "checkmark.circle.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.green)
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("********")
+                            .font(.system(.caption, design: .monospaced))
+                        Text("API key 已儲存；輸入新值可替換。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 case .newValue:
                     Label(
                         "新的 API key 將在 Save 或 Apply 時儲存。",
@@ -224,7 +239,18 @@ private struct PreviewSection: View {
             }
             LabeledContent("Route") {
                 Text(preview.routeName)
-                    .foregroundStyle(preview.bridgeEnabled ? Color.orange : Color.secondary)
+                    .foregroundStyle(
+                        preview.bridgeEnabled && preview.bridgeStatus != .running
+                            ? Color.orange
+                            : Color.secondary
+                    )
+            }
+            if preview.bridgeEnabled,
+               let bridgeStatus = preview.bridgeStatus
+            {
+                LabeledContent("Bridge") {
+                    BridgeStatusBadge(status: bridgeStatus)
+                }
             }
             LabeledContent("Endpoint") {
                 Text(preview.endpoint)

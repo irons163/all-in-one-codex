@@ -1,9 +1,22 @@
 import Foundation
 
+/// Runtime state of the local loopback bridge.
+public enum OpenCodeGoBridgeStatus: String, Codable, Equatable, Sendable {
+    case running
+    case stopped
+}
+
 /// Lifecycle boundary for the local Responses-to-Chat Completions bridge.
 public protocol OpenCodeGoBridgeManaging: AnyObject {
+    var status: OpenCodeGoBridgeStatus { get }
     func ensureRunning() throws
     func stop()
+}
+
+public extension OpenCodeGoBridgeManaging {
+    var status: OpenCodeGoBridgeStatus {
+        .stopped
+    }
 }
 
 /// Errors are deliberately generic so neither bearer credentials nor upstream

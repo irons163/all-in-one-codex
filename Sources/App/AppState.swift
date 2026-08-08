@@ -15,6 +15,7 @@ final class AppState: ObservableObject {
         let model: String
         let isActive: Bool
         let requiresLoopbackBridge: Bool
+        let bridgeStatus: OpenCodeGoBridgeStatus?
     }
 
     struct ModelOption: Identifiable, Equatable {
@@ -87,6 +88,7 @@ final class AppState: ObservableObject {
         let endpoint: String
         let routeName: String
         let bridgeEnabled: Bool
+        let bridgeStatus: OpenCodeGoBridgeStatus?
         let loopbackEndpoint: String?
         let upstreamEndpoint: String?
         let model: String
@@ -102,6 +104,7 @@ final class AppState: ObservableObject {
             endpoint: String,
             routeName: String,
             bridgeEnabled: Bool,
+            bridgeStatus: OpenCodeGoBridgeStatus?,
             loopbackEndpoint: String?,
             upstreamEndpoint: String?,
             model: String,
@@ -117,6 +120,7 @@ final class AppState: ObservableObject {
             self.endpoint = endpoint
             self.routeName = routeName
             self.bridgeEnabled = bridgeEnabled
+            self.bridgeStatus = bridgeStatus
             self.loopbackEndpoint = loopbackEndpoint
             self.upstreamEndpoint = upstreamEndpoint
             self.model = model
@@ -132,6 +136,7 @@ final class AppState: ObservableObject {
         let endpoint: String
         let explanation: String
         let bridgeEnabled: Bool
+        let bridgeStatus: OpenCodeGoBridgeStatus?
         let loopbackEndpoint: String?
         let upstreamEndpoint: String?
         let isKnown: Bool
@@ -143,6 +148,7 @@ final class AppState: ObservableObject {
     @Published private(set) var preview: PreviewSnapshot?
     @Published private(set) var isBusy = false
     @Published private(set) var statusMessage: String?
+    @Published private(set) var bridgeStatus: OpenCodeGoBridgeStatus = .stopped
     @Published var errorMessage: String?
     @Published var selectedProfileID: UUID?
     @Published var editorDraft = ProfileDraft()
@@ -318,7 +324,9 @@ final class AppState: ObservableObject {
             // the bridge. A startup failure must not prevent profile metadata
             // from being loaded below.
             try clientAdapter.prepareForUse()
+            bridgeStatus = clientAdapter.bridgeStatus
         } catch {
+            bridgeStatus = clientAdapter.bridgeStatus
             preparationError = error
         }
 
@@ -501,6 +509,7 @@ final class AppState: ObservableObject {
             // Core integration point: this is the sole apply call.
             let receipt = try clientAdapter.apply(profile: profile)
             lastReceipt = receipt
+            bridgeStatus = clientAdapter.bridgeStatus
             activeProfileID = profileID
             rebuildProfileItems()
             statusMessage = "已套用「\(profile.name)」。"
@@ -576,7 +585,8 @@ final class AppState: ObservableObject {
                 providerName: presentation.name,
                 model: profile.model,
                 isActive: profile.id == activeProfileID,
-                requiresLoopbackBridge: route.bridgeEnabled
+                requiresLoopbackBridge: route.bridgeEnabled,
+                bridgeStatus: route.bridgeStatus
             )
         }
     }
@@ -598,14 +608,19 @@ final class AppState: ObservableObject {
         var warnings: [String] = []
 
         if route.bridgeEnabled {
-            changes.append("Bridge：已啟用（本機 Responses ↔ Chat Completions 轉換）")
+            let bridgeLabel = route.bridgeStatus == .running ? "執行中" : "未啟動"
+            changes.append(
+                "Bridge：\(bridgeLabel)（本機 Responses ↔ Chat Completions 轉換）"
+            )
             if let loopbackEndpoint = route.loopbackEndpoint {
                 changes.append("Loopback endpoint：\(loopbackEndpoint)")
             }
             if let upstreamEndpoint = route.upstreamEndpoint {
                 changes.append("Upstream endpoint：\(upstreamEndpoint)")
             }
-            warnings.append(route.explanation)
+            if route.bridgeStatus != .running {
+                warnings.append("Bridge 尚未執行；套用後請保持 All-in-One Codex 開啟。")
+            }
         } else {
             changes.append("Bridge：未啟用（直接使用 Responses）")
             changes.append("Endpoint：\(route.endpoint)")
@@ -618,6 +633,7 @@ final class AppState: ObservableObject {
             endpoint: route.endpoint,
             routeName: route.routeName,
             bridgeEnabled: route.bridgeEnabled,
+            bridgeStatus: route.bridgeStatus,
             loopbackEndpoint: route.loopbackEndpoint,
             upstreamEndpoint: route.upstreamEndpoint,
             model: profile.model,
@@ -713,6 +729,7 @@ final class AppState: ObservableObject {
                 endpoint: route.baseURL,
                 explanation: "Chat-only model 由本機 bridge 轉換 Responses ↔ Chat Completions；app 需保持執行。",
                 bridgeEnabled: true,
+                bridgeStatus: bridgeStatus,
                 loopbackEndpoint: route.baseURL,
                 upstreamEndpoint: upstreamEndpoint,
                 isKnown: true
@@ -724,6 +741,7 @@ final class AppState: ObservableObject {
             endpoint: route.baseURL,
             explanation: "Codex 直接使用 provider 的 Responses endpoint。",
             bridgeEnabled: false,
+            bridgeStatus: nil,
             loopbackEndpoint: nil,
             upstreamEndpoint: nil,
             isKnown: true
@@ -739,6 +757,7 @@ final class AppState: ObservableObject {
             endpoint: endpoint,
             explanation: explanation,
             bridgeEnabled: false,
+            bridgeStatus: nil,
             loopbackEndpoint: nil,
             upstreamEndpoint: nil,
             isKnown: false

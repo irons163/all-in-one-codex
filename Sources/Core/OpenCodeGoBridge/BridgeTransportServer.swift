@@ -59,6 +59,12 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, @unchecked
         self.toolCallCache = toolCallCache
     }
 
+    public var status: OpenCodeGoBridgeStatus {
+        lock.lock()
+        defer { lock.unlock() }
+        return server == nil ? .stopped : .running
+    }
+
     public func ensureRunning() throws {
         lock.lock()
         defer { lock.unlock() }

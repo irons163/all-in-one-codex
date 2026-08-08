@@ -134,7 +134,11 @@ final class CodexCoreTests: XCTestCase {
         let keyMaterial = UUID().uuidString + UUID().uuidString
         try credentials.save(Data(keyMaterial.utf8), for: profile.id)
 
-        let adapter = CodexClientAdapter(configURL: configURL, credentialStore: credentials)
+        let adapter = CodexClientAdapter(
+            configURL: configURL,
+            credentialStore: credentials,
+            bridgeManager: FakeBridgeManager()
+        )
         let preview = try adapter.preview(profile: profile)
         XCTAssertFalse(preview.projected.contains(keyMaterial))
 
