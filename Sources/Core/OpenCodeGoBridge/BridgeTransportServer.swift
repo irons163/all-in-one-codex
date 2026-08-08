@@ -492,7 +492,8 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
                     chatResponse: upstream.body,
                     contentType: upstream.headers["content-type"],
                     fallbackModel: converted.model,
-                    toolContext: converted.toolContext
+                    toolContext: converted.toolContext,
+                    outputMode: converted.outputMode
                 )
                 toolCallCache.store(
                     responseID: conversion.responseID,

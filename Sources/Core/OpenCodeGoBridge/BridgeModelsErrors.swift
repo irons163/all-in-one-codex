@@ -366,23 +366,47 @@ public struct OpenCodeGoToolContext: Codable, Hashable, Sendable {
     }
 }
 
+/// Selects the Responses output contract expected by the originating Codex
+/// request. Remote compaction v2 still uses `/responses`, but it requires one
+/// `compaction` output item instead of an assistant message.
+public enum OpenCodeGoResponsesOutputMode: Equatable, Sendable {
+    case standard
+    case compaction
+}
+
+enum OpenCodeGoCompactionEnvelope {
+    static let prefix = "all-in-one-codex-chat-summary-v1\n"
+
+    static func wrap(_ summary: String) -> String {
+        prefix + summary
+    }
+
+    static func unwrap(_ encryptedContent: String) -> String? {
+        guard encryptedContent.hasPrefix(prefix) else { return nil }
+        return String(encryptedContent.dropFirst(prefix.count))
+    }
+}
+
 /// The buffered JSON body that the bridge sends to Chat Completions.
 public struct OpenCodeGoChatRequestConversion: Sendable {
     public let body: Data
     public let model: String
     public let previousResponseID: String?
     public let toolContext: OpenCodeGoToolContext
+    public let outputMode: OpenCodeGoResponsesOutputMode
 
     public init(
         body: Data,
         model: String,
         previousResponseID: String?,
-        toolContext: OpenCodeGoToolContext = OpenCodeGoToolContext()
+        toolContext: OpenCodeGoToolContext = OpenCodeGoToolContext(),
+        outputMode: OpenCodeGoResponsesOutputMode = .standard
     ) {
         self.body = body
         self.model = model
         self.previousResponseID = previousResponseID
         self.toolContext = toolContext
+        self.outputMode = outputMode
     }
 }
 

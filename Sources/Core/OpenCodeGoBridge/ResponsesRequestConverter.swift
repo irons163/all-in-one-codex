@@ -13,7 +13,16 @@ public enum OpenCodeGoResponsesRequestConverter {
 
         let model = try supportedChatModel(from: root)
         let stream = (root["stream"] as? Bool) ?? true
-        let toolConversion = try chatTools(from: root["tools"])
+        let inputItems = root["input"] as? [[String: Any]]
+        let outputMode: OpenCodeGoResponsesOutputMode = inputItems?.contains(where: isCompactionTrigger) == true
+            ? .compaction
+            : .standard
+        // A compaction request asks the model for a continuation summary and
+        // must not execute tools. Skipping them also avoids forcing Chat-only
+        // providers to understand Responses-only namespace/deferred tools.
+        let toolConversion = outputMode == .compaction
+            ? ToolConversion(tools: [], context: OpenCodeGoToolContext())
+            : try chatTools(from: root["tools"])
         var systemMessages: [[String: Any]] = []
         var conversationMessages: [[String: Any]] = []
 
@@ -36,7 +45,7 @@ public enum OpenCodeGoResponsesRequestConverter {
 
         if let input = root["input"] as? String {
             conversationMessages.append(["role": "user", "content": input])
-        } else if let inputItems = root["input"] as? [[String: Any]] {
+        } else if let inputItems {
             for inputItem in inputItems {
                 try appendChatMessages(
                     from: inputItem,
@@ -99,7 +108,8 @@ public enum OpenCodeGoResponsesRequestConverter {
             body: try JSONSerialization.data(withJSONObject: chatRequest, options: [.sortedKeys]),
             model: model,
             previousResponseID: previousResponseID,
-            toolContext: toolConversion.context
+            toolContext: toolConversion.context,
+            outputMode: outputMode
         )
     }
 
@@ -127,6 +137,31 @@ public enum OpenCodeGoResponsesRequestConverter {
         toolContext: OpenCodeGoToolContext
     ) throws {
         let type = inputItem["type"] as? String
+        if type == "compaction_trigger" {
+            conversationMessages.append([
+                "role": "user",
+                "content": """
+                Create a compact, self-contained continuation summary of the conversation above. \
+                Preserve the user's goals, decisions, constraints, completed work, current state, \
+                relevant file paths and identifiers, unresolved problems, and the exact next steps. \
+                Return only the summary text; do not call tools.
+                """
+            ])
+            return
+        }
+
+        if type == "compaction",
+           let encryptedContent = stringValue(inputItem["encrypted_content"]),
+           let summary = OpenCodeGoCompactionEnvelope.unwrap(encryptedContent),
+           !summary.isEmpty
+        {
+            conversationMessages.append([
+                "role": "system",
+                "content": "Prior compacted conversation context:\n\(summary)"
+            ])
+            return
+        }
+
         if isToolCallOutput(inputItem) {
             guard let callID = stringValue(inputItem["call_id"] ?? inputItem["tool_call_id"]),
                   !callID.isEmpty
@@ -252,9 +287,10 @@ public enum OpenCodeGoResponsesRequestConverter {
         guard let rawTools else {
             return ToolConversion(tools: [], context: OpenCodeGoToolContext())
         }
-        guard let responseTools = rawTools as? [[String: Any]] else {
+        guard let rawResponseTools = rawTools as? [[String: Any]] else {
             throw OpenCodeGoBridgeError.invalidRequest
         }
+        let responseTools = try flattenedResponseTools(rawResponseTools)
 
         var tools: [[String: Any]] = []
         var mappings: [OpenCodeGoToolMapping] = []
@@ -318,6 +354,12 @@ public enum OpenCodeGoResponsesRequestConverter {
                     "parameters": customInputSchema()
                 ]
 
+            case "web_search":
+                // This is a provider-hosted Responses tool. A Chat Completions-only
+                // upstream cannot execute it, so omit it instead of presenting it as
+                // a function that the bridge could never dispatch.
+                continue
+
             default:
                 throw OpenCodeGoBridgeError.invalidRequest
             }
@@ -343,6 +385,41 @@ public enum OpenCodeGoResponsesRequestConverter {
             )
         }
         return ToolConversion(tools: tools, context: OpenCodeGoToolContext(mappings: mappings))
+    }
+
+    private static func flattenedResponseTools(
+        _ responseTools: [[String: Any]]
+    ) throws -> [[String: Any]] {
+        var flattened: [[String: Any]] = []
+
+        func append(_ tool: [String: Any], inheritedNamespace: String?) throws {
+            guard let type = tool["type"] as? String else {
+                throw OpenCodeGoBridgeError.invalidRequest
+            }
+            guard type == "namespace" else {
+                var leaf = tool
+                if leaf["namespace"] == nil, let inheritedNamespace {
+                    leaf["namespace"] = inheritedNamespace
+                }
+                flattened.append(leaf)
+                return
+            }
+
+            guard let name = trimmedString(tool["name"]),
+                  let children = tool["tools"] as? [[String: Any]]
+            else {
+                throw OpenCodeGoBridgeError.invalidRequest
+            }
+            let namespace = inheritedNamespace.map { "\($0)__\(name)" } ?? name
+            for child in children {
+                try append(child, inheritedNamespace: namespace)
+            }
+        }
+
+        for tool in responseTools {
+            try append(tool, inheritedNamespace: nil)
+        }
+        return flattened
     }
 
     private static func customInputSchema() -> [String: Any] {
@@ -471,6 +548,10 @@ public enum OpenCodeGoResponsesRequestConverter {
     private static func isToolCallOutput(_ inputItem: [String: Any]) -> Bool {
         let type = inputItem["type"] as? String
         return type == "function_call_output" || type == "custom_tool_call_output"
+    }
+
+    private static func isCompactionTrigger(_ inputItem: [String: Any]) -> Bool {
+        inputItem["type"] as? String == "compaction_trigger"
     }
 
     private static func trimmedString(_ value: Any?) -> String? {

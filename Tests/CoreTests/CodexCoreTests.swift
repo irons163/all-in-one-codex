@@ -963,6 +963,79 @@ final class CodexCoreTests: XCTestCase {
         )
     }
 
+    func testConvertsRemoteCompactionV2RequestWithoutResponsesOnlyTools() throws {
+        let request: [String: Any] = [
+            "model": "glm-5.2",
+            "stream": true,
+            "input": [
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Keep this decision."]]
+                ],
+                ["type": "compaction_trigger"]
+            ],
+            "tools": [[
+                "type": "namespace",
+                "name": "mcp__example",
+                "description": "Responses-only namespace fixture.",
+                "tools": [[
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Lookup fixture.",
+                    "strict": false,
+                    "parameters": ["type": "object", "properties": [String: Any]()]
+                ]]
+            ]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: request)
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(responseRequest: data)
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+
+        XCTAssertEqual(conversion.outputMode, .compaction)
+        XCTAssertNil(chat["tools"])
+        XCTAssertEqual(messages.first?["role"] as? String, "user")
+        XCTAssertEqual(messages.last?["role"] as? String, "user")
+        XCTAssertTrue(
+            (messages.last?["content"] as? String)?.contains("continuation summary") == true
+        )
+    }
+
+    func testRestoresBridgeCompactionEnvelopeIntoFollowingChatRequest() throws {
+        let request: [String: Any] = [
+            "model": "glm-5.2",
+            "input": [
+                [
+                    "type": "compaction",
+                    "encrypted_content": OpenCodeGoCompactionEnvelope.wrap("Decision: retain session IDs.")
+                ],
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Continue."]]
+                ]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: request)
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(responseRequest: data)
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+
+        XCTAssertEqual(conversion.outputMode, .standard)
+        XCTAssertEqual(messages.first?["role"] as? String, "system")
+        XCTAssertTrue(
+            (messages.first?["content"] as? String)?.contains("retain session IDs") == true
+        )
+        XCTAssertEqual(messages.last?["role"] as? String, "user")
+    }
+
     func testConvertsAssistantInputFunctionCalls() throws {
         let request: [String: Any] = [
             "model": "glm-5.2",
@@ -1025,6 +1098,27 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertTrue(events.contains("event: response.completed"))
         XCTAssertTrue(events.contains("\"input_tokens\":4"))
         XCTAssertFalse(events.contains("[DONE]"))
+    }
+
+    func testConvertsChatSummaryIntoRemoteCompactionV2OutputItem() throws {
+        let upstream = """
+        {"id":"chatcmpl_compact","model":"glm-5.2","created":1700000000,"choices":[{"message":{"role":"assistant","content":"Goal: preserve the active session. Next: retry the bridge."},"finish_reason":"stop"}],"usage":{"prompt_tokens":40,"completion_tokens":12,"total_tokens":52}}
+        """
+
+        let conversion = try OpenCodeGoChatResponseConverter.convert(
+            chatResponse: Data(upstream.utf8),
+            fallbackModel: "glm-5.2",
+            outputMode: .compaction
+        )
+        let events = try XCTUnwrap(String(data: conversion.sse, encoding: .utf8))
+
+        XCTAssertTrue(events.contains("event: response.output_item.added"))
+        XCTAssertTrue(events.contains("event: response.output_item.done"))
+        XCTAssertTrue(events.contains("\"type\":\"compaction\""))
+        XCTAssertTrue(events.contains("all-in-one-codex-chat-summary-v1"))
+        XCTAssertTrue(events.contains("preserve the active session"))
+        XCTAssertFalse(events.contains("\"type\":\"message\""))
+        XCTAssertTrue(events.contains("event: response.completed"))
     }
 
     func testConvertsReasoningSSEToResponsesReasoningEvents() throws {
@@ -1757,7 +1851,7 @@ final class CodexCoreTests: XCTestCase {
         defer { bridge.stop() }
 
         let port = try XCTUnwrap(bridge.localPort)
-        let requestBody = Data(#"{"model":"glm-5.2","input":[{"role":"user","content":"hello"}]}"#.utf8)
+        let requestBody = Data(#"{"model":"glm-5.2","input":[{"role":"user","content":"hello"}],"tools":[{"type":"namespace","name":"mcp__browser","tools":[{"type":"function","name":"navigate","parameters":{"type":"object","properties":{}}}]},{"type":"web_search"}]}"#.utf8)
         let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/responses"))
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1793,6 +1887,81 @@ final class CodexCoreTests: XCTestCase {
         )
         XCTAssertEqual(converted["model"] as? String, "glm-5.2")
         XCTAssertNotNil(converted["messages"] as? [[String: Any]])
+        let convertedTools = try XCTUnwrap(converted["tools"] as? [[String: Any]])
+        XCTAssertEqual(convertedTools.count, 1)
+        XCTAssertEqual(
+            ((convertedTools[0]["function"] as? [String: Any])?["name"] as? String),
+            "mcp__browser__navigate"
+        )
+    }
+
+    func testPreserveChatLoopbackRoundTripsRemoteCompactionV2() async throws {
+        let upstreamBody = Data(
+            #"{"id":"chatcmpl_compact_bridge","choices":[{"message":{"role":"assistant","content":"Goal: keep the current session. Next: continue the task."},"finish_reason":"stop"}]}"#.utf8
+        )
+        let transport = CapturingBridgeTransport(
+            response: OpenCodeGoBridgeTransportResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/json"],
+                body: upstreamBody
+            )
+        )
+        let bridge = OpenCodeGoBridgeManager(port: 0, transport: transport)
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true
+        )
+        bridge.configurePreservingSessions(
+            route: try ProviderCatalog.route(for: profile),
+            credential: Data("selected-chat-key".utf8)
+        )
+        try bridge.ensureRunning()
+        defer { bridge.stop() }
+
+        let requestObject: [String: Any] = [
+            "model": "glm-5.2",
+            "stream": true,
+            "input": [
+                ["type": "message", "role": "user", "content": "Keep this goal."],
+                ["type": "compaction_trigger"]
+            ],
+            "tools": [[
+                "type": "namespace",
+                "name": "mcp__fixture",
+                "description": "Responses-only fixture.",
+                "tools": [[String: Any]]()
+            ]]
+        ]
+        let port = try XCTUnwrap(bridge.localPort)
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/responses"))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestObject)
+        request.setValue("Bearer inbound-oauth", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+
+        let (body, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+        let sse = try XCTUnwrap(String(data: body, encoding: .utf8))
+
+        XCTAssertEqual(httpResponse.statusCode, 200)
+        XCTAssertTrue(sse.contains("event: response.output_item.done"))
+        XCTAssertTrue(sse.contains("\"type\":\"compaction\""))
+        XCTAssertTrue(sse.contains("all-in-one-codex-chat-summary-v1"))
+        XCTAssertFalse(sse.contains("\"type\":\"message\""))
+
+        let upstreamRequest = try XCTUnwrap(transport.capturedRequest)
+        let converted = try XCTUnwrap(
+            upstreamRequest.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                as? [String: Any]
+        )
+        XCTAssertNil(converted["tools"])
+        XCTAssertTrue(
+            ((converted["messages"] as? [[String: Any]])?.last?["content"] as? String)?
+                .contains("continuation summary") == true
+        )
     }
 
     func testPrepareForUseStartsOnlyForAnActiveBridgeConfiguration() throws {
@@ -1941,6 +2110,46 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertLessThanOrEqual(long.chatName.count, 64)
         XCTAssertEqual(long.chatName, second.toolContext.mapping(forChatName: long.chatName)?.chatName)
         XCTAssertEqual(first.toolContext.mapping(forChatName: long.chatName)?.responseName, longName)
+    }
+
+    func testFlattensResponsesNamespaceWrapperForOrdinaryRequests() throws {
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "input": [["role": "user", "content": "hello"]],
+            "tools": [[
+                "type": "namespace",
+                "name": "mcp__browser",
+                "description": "Browser tools",
+                "tools": [[
+                    "type": "function",
+                    "name": "navigate",
+                    "description": "Navigate to a URL",
+                    "parameters": ["type": "object", "properties": [String: Any]()]
+                ], [
+                    "type": "custom",
+                    "name": "evaluate",
+                    "description": "Evaluate browser code"
+                ]]
+            ], [
+                "type": "web_search"
+            ]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: request)
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(responseRequest: data)
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let tools = try XCTUnwrap(chat["tools"] as? [[String: Any]])
+        let mappings = conversion.toolContext.mappings
+
+        XCTAssertEqual(tools.count, 2)
+        XCTAssertEqual(mappings.count, 2)
+        XCTAssertEqual(Set(mappings.compactMap(\.namespace)), Set(["mcp__browser"]))
+        XCTAssertEqual(Set(mappings.map(\.responseName)), Set(["navigate", "evaluate"]))
+        XCTAssertEqual(
+            Set(mappings.map(\.chatName)),
+            Set(["mcp__browser__navigate", "mcp__browser__evaluate"])
+        )
     }
 
     func testToolSearchUsesSyntheticTypedToolCall() throws {

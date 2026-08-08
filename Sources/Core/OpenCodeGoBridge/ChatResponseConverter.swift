@@ -8,7 +8,8 @@ public enum OpenCodeGoChatResponseConverter {
         chatResponse: Data,
         contentType: String? = nil,
         fallbackModel: String,
-        toolContext: OpenCodeGoToolContext = OpenCodeGoToolContext()
+        toolContext: OpenCodeGoToolContext = OpenCodeGoToolContext(),
+        outputMode: OpenCodeGoResponsesOutputMode = .standard
     ) throws -> OpenCodeGoResponsesConversion {
         let payloads: [[String: Any]]
         let text = String(data: chatResponse, encoding: .utf8) ?? ""
@@ -36,17 +37,40 @@ public enum OpenCodeGoChatResponseConverter {
         let toolCalls = accumulation.completedToolCalls
         let separated = OpenCodeGoReasoningTagExtractor.extract(from: accumulation.text)
         let reasoning = accumulation.reasoning + separated.reasoning
-        let sse = try OpenCodeGoResponsesEventEncoder.stream(
-            responseID: responseID,
-            model: accumulation.model ?? fallbackModel,
-            createdAt: accumulation.createdAt ?? Int(Date().timeIntervalSince1970),
-            reasoning: reasoning,
-            text: separated.visibleText,
-            toolCalls: toolCalls,
-            toolContext: toolContext,
-            usage: normalizedUsage(accumulation.usage),
-            finishReason: accumulation.finishReason
-        )
+        let model = accumulation.model ?? fallbackModel
+        let createdAt = accumulation.createdAt ?? Int(Date().timeIntervalSince1970)
+        let usage = normalizedUsage(accumulation.usage)
+        let sse: Data
+        switch outputMode {
+        case .standard:
+            sse = try OpenCodeGoResponsesEventEncoder.stream(
+                responseID: responseID,
+                model: model,
+                createdAt: createdAt,
+                reasoning: reasoning,
+                text: separated.visibleText,
+                toolCalls: toolCalls,
+                toolContext: toolContext,
+                usage: usage,
+                finishReason: accumulation.finishReason
+            )
+        case .compaction:
+            guard toolCalls.isEmpty else {
+                throw OpenCodeGoBridgeError.invalidUpstreamResponse
+            }
+            let summary = separated.visibleText.isEmpty ? reasoning : separated.visibleText
+            guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw OpenCodeGoBridgeError.invalidUpstreamResponse
+            }
+            sse = try OpenCodeGoResponsesEventEncoder.compactionStream(
+                responseID: responseID,
+                model: model,
+                createdAt: createdAt,
+                summary: summary,
+                usage: usage,
+                finishReason: accumulation.finishReason
+            )
+        }
         return OpenCodeGoResponsesConversion(
             responseID: responseID,
             sse: sse,
@@ -305,6 +329,83 @@ private enum OpenCodeGoReasoningTagExtractor {
 }
 
 enum OpenCodeGoResponsesEventEncoder {
+    static func compactionStream(
+        responseID: String,
+        model: String,
+        createdAt: Int,
+        summary: String,
+        usage: [String: Any]?,
+        finishReason: String?
+    ) throws -> Data {
+        var stream = ""
+        let inProgressResponse = responseObject(
+            id: responseID,
+            model: model,
+            createdAt: createdAt,
+            status: "in_progress",
+            output: [],
+            usage: nil,
+            incompleteDetails: nil,
+            error: nil
+        )
+        try append(
+            type: "response.created",
+            payload: ["type": "response.created", "response": inProgressResponse],
+            to: &stream
+        )
+        try append(
+            type: "response.in_progress",
+            payload: ["type": "response.in_progress", "response": inProgressResponse],
+            to: &stream
+        )
+
+        let itemID = "cmp_\(responseID)"
+        let inProgressItem: [String: Any] = [
+            "id": itemID,
+            "type": "compaction",
+            "encrypted_content": ""
+        ]
+        try append(
+            type: "response.output_item.added",
+            payload: [
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": inProgressItem
+            ],
+            to: &stream
+        )
+
+        let completeItem: [String: Any] = [
+            "id": itemID,
+            "type": "compaction",
+            "encrypted_content": OpenCodeGoCompactionEnvelope.wrap(summary)
+        ]
+        try appendOutputItemDone(
+            completeItem,
+            itemID: itemID,
+            outputIndex: 0,
+            to: &stream
+        )
+
+        let isLength = finishReason?.lowercased() == "length"
+        let completedResponse = responseObject(
+            id: responseID,
+            model: model,
+            createdAt: createdAt,
+            status: isLength ? "incomplete" : "completed",
+            output: [completeItem],
+            usage: usage,
+            incompleteDetails: isLength ? ["reason": "max_output_tokens"] : nil,
+            error: nil
+        )
+        try append(
+            type: "response.completed",
+            payload: ["type": "response.completed", "response": completedResponse],
+            to: &stream
+        )
+        return Data(stream.utf8)
+    }
+
     static func stream(
         responseID: String,
         model: String,
