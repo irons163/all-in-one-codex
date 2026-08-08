@@ -18,6 +18,49 @@ final class AppState: ObservableObject {
         let bridgeStatus: OpenCodeGoBridgeStatus?
     }
 
+    struct ModelCatalogStatus: Equatable {
+        enum State: Equatable {
+            case pending
+            case applied
+            case restored
+        }
+
+        let state: State
+        let modelCount: Int?
+        let profileID: UUID?
+        let model: String?
+
+        static let pending = ModelCatalogStatus(
+            state: .pending,
+            modelCount: nil,
+            profileID: nil,
+            model: nil
+        )
+
+        static let restored = ModelCatalogStatus(
+            state: .restored,
+            modelCount: nil,
+            profileID: nil,
+            model: nil
+        )
+
+        var isApplied: Bool {
+            state == .applied
+        }
+
+        func matches(profileID candidateProfileID: UUID?, model candidateModel: String) -> Bool {
+            guard
+                state == .applied,
+                let profileID,
+                let model
+            else {
+                return false
+            }
+            return profileID == candidateProfileID
+                && model == candidateModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
     struct ModelOption: Identifiable, Equatable {
         enum Transport: String, Equatable {
             case responses
@@ -92,6 +135,7 @@ final class AppState: ObservableObject {
         let loopbackEndpoint: String?
         let upstreamEndpoint: String?
         let model: String
+        let modelCatalogCount: Int?
         let summary: String
         let projectedConfig: String
         let changes: [String]
@@ -108,6 +152,7 @@ final class AppState: ObservableObject {
             loopbackEndpoint: String?,
             upstreamEndpoint: String?,
             model: String,
+            modelCatalogCount: Int?,
             summary: String,
             projectedConfig: String,
             changes: [String],
@@ -124,6 +169,7 @@ final class AppState: ObservableObject {
             self.loopbackEndpoint = loopbackEndpoint
             self.upstreamEndpoint = upstreamEndpoint
             self.model = model
+            self.modelCatalogCount = modelCatalogCount
             self.summary = summary
             self.projectedConfig = projectedConfig
             self.changes = changes
@@ -149,6 +195,8 @@ final class AppState: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var statusMessage: String?
     @Published private(set) var bridgeStatus: OpenCodeGoBridgeStatus = .stopped
+    @Published private(set) var restartRequired = false
+    @Published private(set) var modelCatalogStatus = ModelCatalogStatus.pending
     @Published var errorMessage: String?
     @Published var selectedProfileID: UUID?
     @Published var editorDraft = ProfileDraft()
@@ -156,6 +204,9 @@ final class AppState: ObservableObject {
     @Published var isShowingNewProfile = false
 
     // MARK: Core dependencies
+
+    static let restartRequiredMessage =
+        "設定與 model catalog 已更新；請完全退出並重新啟動 Codex App/CLI，建立新 task。"
 
     private let profileRepository: ProfileRepository
     private let credentialStore: any CredentialStoring
@@ -219,6 +270,35 @@ final class AppState: ObservableObject {
 
     func allowsCustomModels(for presetKey: String) -> Bool {
         presetOptions.first { $0.id == presetKey }?.allowsCustomModels ?? false
+    }
+
+    func modelCatalogCount(for presetKey: String, model: String) -> Int? {
+        guard let presetID = corePresetID(for: presetKey) else {
+            return nil
+        }
+
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedModel.isEmpty else {
+            return nil
+        }
+
+        do {
+            let profile = ProviderProfile(
+                name: "Catalog preview",
+                presetID: presetID,
+                model: trimmedModel
+            )
+            return try CodexModelCatalog.make(for: profile).models.count
+        } catch {
+            return nil
+        }
+    }
+
+    func dismissRestartRequired() {
+        restartRequired = false
+        if statusMessage == Self.restartRequiredMessage {
+            statusMessage = nil
+        }
     }
 
     func isDefaultModel(_ model: String, for presetKey: String) -> Bool {
@@ -482,7 +562,9 @@ final class AppState: ObservableObject {
             self.lastReceipt = nil
             activeProfileID = nil
             rebuildProfileItems()
-            statusMessage = "已復原上一個 switch。"
+            modelCatalogStatus = .restored
+            restartRequired = true
+            statusMessage = "已復原上一個 switch；請完全退出並重新啟動 Codex App/CLI，建立新 task。"
         } catch {
             fail("Undo", error: error)
         }
@@ -511,8 +593,22 @@ final class AppState: ObservableObject {
             lastReceipt = receipt
             bridgeStatus = clientAdapter.bridgeStatus
             activeProfileID = profileID
+            let didWriteModelCatalog = receipt.catalogURL != nil
+                && receipt.catalogAfterHash != nil
+            modelCatalogStatus = ModelCatalogStatus(
+                state: didWriteModelCatalog ? .applied : .pending,
+                modelCount: didWriteModelCatalog
+                    ? modelCatalogCount(
+                        for: presetKey(for: profile.presetID),
+                        model: profile.model
+                    )
+                    : nil,
+                profileID: didWriteModelCatalog ? profile.id : nil,
+                model: didWriteModelCatalog ? profile.model : nil
+            )
+            restartRequired = true
             rebuildProfileItems()
-            statusMessage = "已套用「\(profile.name)」。"
+            statusMessage = Self.restartRequiredMessage
         } catch {
             fail("套用 profile", error: error)
         }
@@ -605,10 +701,21 @@ final class AppState: ObservableObject {
             "切換 provider 為 \(presentation.name)",
             "使用 model \(profile.model)"
         ]
+        let catalogModelCount = modelCatalogCount(
+            for: presetKey(for: profile.presetID),
+            model: profile.model
+        )
+        if let catalogModelCount {
+            changes.append(
+                "Apply 時建立 Codex model catalog（\(catalogModelCount) 個 models）"
+            )
+        }
         var warnings: [String] = []
 
         if route.bridgeEnabled {
-            let bridgeLabel = route.bridgeStatus == .running ? "執行中" : "未啟動"
+            let bridgeLabel = route.bridgeStatus == .running
+                ? "執行中"
+                : "Apply 時自動啟動"
             changes.append(
                 "Bridge：\(bridgeLabel)（本機 Responses ↔ Chat Completions 轉換）"
             )
@@ -619,7 +726,9 @@ final class AppState: ObservableObject {
                 changes.append("Upstream endpoint：\(upstreamEndpoint)")
             }
             if route.bridgeStatus != .running {
-                warnings.append("Bridge 尚未執行；套用後請保持 All-in-One Codex 開啟。")
+                warnings.append(
+                    "Bridge 會在 Apply 時由 All-in-One Codex 自動啟動；不需另外手動啟動。"
+                )
             }
         } else {
             changes.append("Bridge：未啟用（直接使用 Responses）")
@@ -637,6 +746,7 @@ final class AppState: ObservableObject {
             loopbackEndpoint: route.loopbackEndpoint,
             upstreamEndpoint: route.upstreamEndpoint,
             model: profile.model,
+            modelCatalogCount: catalogModelCount,
             summary: corePreview.summary,
             projectedConfig: corePreview.projected,
             changes: changes,
@@ -727,7 +837,7 @@ final class AppState: ObservableObject {
             return RoutePresentation(
                 routeName: "Local Bridge → upstream Chat Completions",
                 endpoint: route.baseURL,
-                explanation: "Chat-only model 由本機 bridge 轉換 Responses ↔ Chat Completions；app 需保持執行。",
+                explanation: "Chat-only model 由本機 bridge 轉換 Responses ↔ Chat Completions；Apply 會自動啟動 bridge，使用期間請保持 All-in-One Codex 開啟。",
                 bridgeEnabled: true,
                 bridgeStatus: bridgeStatus,
                 loopbackEndpoint: route.baseURL,
@@ -811,6 +921,9 @@ final class AppState: ObservableObject {
         // Core's typed errors intentionally omit credential contents. Unknown
         // errors remain generic so provider request details cannot leak into
         // the UI.
+        if let friendlyMessage = friendlyCoreErrorMessage(error) {
+            return "\(operation) 失敗：\(friendlyMessage)"
+        }
         if let localizedError = error as? LocalizedError,
            let description = localizedError.errorDescription,
            !description.isEmpty
@@ -819,6 +932,46 @@ final class AppState: ObservableObject {
         } else {
             return "\(operation) 失敗。請檢查 Core adapter 與設定。"
         }
+    }
+
+    private func friendlyCoreErrorMessage(_ error: Error?) -> String? {
+        guard let error else {
+            return nil
+        }
+
+        if let catalogError = error as? CodexModelCatalogError {
+            switch catalogError {
+            case .emptyModels:
+                return "Codex model catalog 不可為空。"
+            case .tooManyModels:
+                return "Codex model catalog 的 model 數量超過安全上限。"
+            case .duplicateModel:
+                return "Codex model catalog 含有重複 model。"
+            case .invalidModelIdentifier:
+                return "選取的 model ID 無法安全寫入 Codex model catalog。"
+            case .invalidSchema:
+                return "Codex model catalog 格式不受支援。"
+            case .catalogTooLarge:
+                return "Codex model catalog 太大，未套用設定。"
+            case .unreadableCatalog:
+                return "Codex model catalog 無法安全讀取。"
+            case .unsafeCatalogPath:
+                return "Codex model catalog 路徑不安全，為保護現有設定未覆寫。"
+            }
+        }
+
+        if let switchError = error as? CodexSwitchError {
+            switch switchError {
+            case .modelCatalogChanged:
+                return "Codex model catalog 在套用後已變更，為安全起見無法 Undo。"
+            case .foreignModelCatalogPointer:
+                return "現有 Codex 設定指向其他 model catalog；為安全起見未覆寫，請先移除或改回該設定。"
+            default:
+                return nil
+            }
+        }
+
+        return nil
     }
 
     private enum AppStateError: LocalizedError {

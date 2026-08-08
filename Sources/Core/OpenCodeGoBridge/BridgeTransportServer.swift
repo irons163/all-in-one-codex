@@ -47,14 +47,17 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, @unchecked
     public static let shared = OpenCodeGoBridgeManager()
 
     private let lock = NSLock()
+    private let port: UInt16
     private let transport: any OpenCodeGoBridgeTransport
     private let toolCallCache: OpenCodeGoToolCallCache
     private var server: OpenCodeGoLoopbackHTTPServer?
 
     public init(
+        port: UInt16 = OpenCodeGoBridgeManager.port,
         transport: any OpenCodeGoBridgeTransport = URLSessionOpenCodeGoBridgeTransport(),
         toolCallCache: OpenCodeGoToolCallCache = OpenCodeGoToolCallCache()
     ) {
+        self.port = port
         self.transport = transport
         self.toolCallCache = toolCallCache
     }
@@ -63,6 +66,14 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, @unchecked
         lock.lock()
         defer { lock.unlock() }
         return server == nil ? .stopped : .running
+    }
+
+    /// The active listener port. A zero configured port is useful for isolated
+    /// loopback tests and is replaced by the kernel-selected port after start.
+    public var localPort: UInt16? {
+        lock.lock()
+        defer { lock.unlock() }
+        return server?.localPort
     }
 
     public func ensureRunning() throws {
@@ -77,7 +88,7 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, @unchecked
             toolCallCache: toolCallCache
         )
         let candidate = OpenCodeGoLoopbackHTTPServer(
-            port: Self.port,
+            port: port,
             handler: handler
         )
         do {
@@ -122,6 +133,17 @@ private struct OpenCodeGoBridgeHTTPResponse: Sendable {
         )
     }
 
+    static func models() -> OpenCodeGoBridgeHTTPResponse {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let body = (try? encoder.encode(CodexModelCatalog.bridgeModelListResponse())) ?? Data()
+        return OpenCodeGoBridgeHTTPResponse(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json; charset=utf-8"],
+            body: body
+        )
+    }
+
     static func sse(
         statusCode: Int = 200,
         body: Data
@@ -155,6 +177,11 @@ private struct OpenCodeGoBridgeHTTPResponse: Sendable {
 }
 
 enum OpenCodeGoBridgeRoute {
+    static let modelListPaths: Set<String> = [
+        "/models",
+        "/v1/models"
+    ]
+
     static let responsesPaths: Set<String> = [
         "/v1/responses",
         "/responses",
@@ -166,6 +193,10 @@ enum OpenCodeGoBridgeRoute {
 
     static func accepts(_ path: String) -> Bool {
         responsesPaths.contains(path)
+    }
+
+    static func acceptsModelList(_ path: String) -> Bool {
+        modelListPaths.contains(path)
     }
 }
 
@@ -189,6 +220,10 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
     ) {
         if request.method == "GET", request.path == "/health" {
             completion(.health())
+            return
+        }
+        if request.method == "GET", OpenCodeGoBridgeRoute.acceptsModelList(request.path) {
+            completion(.models())
             return
         }
         guard request.method == "POST" else {
@@ -330,11 +365,18 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
         attributes: .concurrent
     )
     private var listeningDescriptor: Int32 = -1
+    private var boundPort: UInt16?
     private var isRunning = false
 
     init(port: UInt16, handler: OpenCodeGoBridgeRequestHandler) {
         self.port = port
         self.handler = handler
+    }
+
+    var localPort: UInt16? {
+        lock.lock()
+        defer { lock.unlock() }
+        return boundPort
     }
 
     func start() throws {
@@ -381,8 +423,21 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
             throw OpenCodeGoBridgeError.unableToStart
         }
 
+        var boundAddress = sockaddr_in()
+        var boundAddressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let resolvedPort = withUnsafeMutablePointer(to: &boundAddress) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.getsockname(descriptor, $0, &boundAddressLength)
+            }
+        }
+        guard resolvedPort == 0 else {
+            _ = Darwin.close(descriptor)
+            throw OpenCodeGoBridgeError.unableToStart
+        }
+
         lock.lock()
         listeningDescriptor = descriptor
+        boundPort = UInt16(bigEndian: boundAddress.sin_port)
         isRunning = true
         lock.unlock()
 
@@ -395,6 +450,7 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
         lock.lock()
         let descriptor = listeningDescriptor
         listeningDescriptor = -1
+        boundPort = nil
         isRunning = false
         lock.unlock()
 

@@ -11,6 +11,8 @@ public enum CodexSwitchError: LocalizedError, Equatable, Sendable {
     case backupUnavailable
     case backupIntegrityConflict
     case configurationChanged
+    case modelCatalogChanged
+    case foreignModelCatalogPointer
 
     public var errorDescription: String? {
         switch self {
@@ -32,6 +34,10 @@ public enum CodexSwitchError: LocalizedError, Equatable, Sendable {
             return "The configuration backup no longer matches the recorded state."
         case .configurationChanged:
             return "The Codex configuration changed after it was applied, so it cannot be undone safely."
+        case .modelCatalogChanged:
+            return "The app-owned Codex model catalog changed after it was applied, so it cannot be undone safely."
+        case .foreignModelCatalogPointer:
+            return "The Codex configuration already points to a model catalog that is not owned by this app."
         }
     }
 }
@@ -53,6 +59,7 @@ public struct SwitchPreview: Equatable, Sendable {
 public struct CodexConfigProjector: Sendable {
     public static let activeBeginMarker = "# BEGIN ALL-IN-ONE-CODEX ACTIVE"
     public static let activeEndMarker = "# END ALL-IN-ONE-CODEX ACTIVE"
+    public static let catalogPointerMarker = "# ALL-IN-ONE-CODEX MODEL CATALOG"
     public static let providersBeginMarker = "# BEGIN ALL-IN-ONE-CODEX PROVIDERS"
     public static let providersEndMarker = "# END ALL-IN-ONE-CODEX PROVIDERS"
 
@@ -86,6 +93,10 @@ public struct CodexConfigProjector: Sendable {
                 throw CodexSwitchError.misplacedActiveMarker
             }
         }
+        try Self.validateModelCatalogPointer(
+            in: originalLines,
+            activeRange: activeRange
+        )
 
         var indicesToRemove = Set<Int>()
         if let activeRange {
@@ -209,7 +220,7 @@ public struct CodexConfigProjector: Sendable {
 
         let rawKey = String(trimmed[..<equalsIndex]).trimmingCharacters(in: .whitespaces)
         let key = rawKey.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        return key == "model" || key == "model_provider"
+        return key == "model" || key == "model_provider" || key == "model_catalog_json"
     }
 
     private static func firstTableIndex(in lines: [String]) -> Int? {
@@ -315,8 +326,100 @@ public struct CodexConfigProjector: Sendable {
             activeBeginMarker,
             "model = \(tomlString(profile.model))",
             "model_provider = \(tomlString(route.providerID))",
+            catalogPointerMarker,
+            "model_catalog_json = \(tomlString(CodexModelCatalog.filename))",
             activeEndMarker
         ]
+    }
+
+    /// Claims only the bare, fixed catalog filename emitted by this projector.
+    /// A user-managed pointer is never removed or overwritten.
+    private static func validateModelCatalogPointer(
+        in lines: [String],
+        activeRange: ClosedRange<Int>?
+    ) throws {
+        let markerIndices = lines.indices.filter {
+            lines[$0].trimmingCharacters(in: .whitespacesAndNewlines) == catalogPointerMarker
+        }
+        guard markerIndices.count <= 1 else {
+            throw CodexSwitchError.malformedManagedMarkers
+        }
+
+        let pointers = topLevelStringAssignments(in: lines).filter {
+            $0.key == "model_catalog_json"
+        }
+        guard !pointers.isEmpty else {
+            guard markerIndices.isEmpty else {
+                throw CodexSwitchError.malformedManagedMarkers
+            }
+            return
+        }
+
+        guard
+            pointers.count == 1,
+            let activeRange,
+            activeRange.contains(pointers[0].index),
+            markerIndices.count == 1,
+            activeRange.contains(markerIndices[0]),
+            pointers[0].value == CodexModelCatalog.filename
+        else {
+            throw CodexSwitchError.foreignModelCatalogPointer
+        }
+    }
+
+    private static func topLevelStringAssignments(
+        in lines: [String]
+    ) -> [(index: Int, key: String, value: String?)] {
+        let upperBound = firstTableIndex(in: lines) ?? lines.endIndex
+        var assignments: [(index: Int, key: String, value: String?)] = []
+        var openMultilineDelimiter: MultilineDelimiter?
+
+        for index in lines.indices where index < upperBound {
+            let line = lines[index]
+            if let delimiter = openMultilineDelimiter {
+                if line.contains(delimiter.rawValue) {
+                    openMultilineDelimiter = nil
+                }
+                continue
+            }
+
+            let code = codeBeforeComment(in: line).trimmingCharacters(in: .whitespaces)
+            guard
+                !code.hasPrefix("#"),
+                let equalsIndex = code.firstIndex(of: "=")
+            else {
+                continue
+            }
+
+            let rawKey = code[..<equalsIndex].trimmingCharacters(in: .whitespaces)
+            let key = rawKey.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            let rawValue = code[code.index(after: equalsIndex)...]
+                .trimmingCharacters(in: .whitespaces)
+            assignments.append((
+                index: index,
+                key: key,
+                value: tomlStringValue(rawValue)
+            ))
+
+            if let delimiter = multilineDelimiterOpened(in: line) {
+                openMultilineDelimiter = delimiter
+            }
+        }
+
+        return assignments
+    }
+
+    private static func tomlStringValue(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard
+            trimmed.count >= 2,
+            let quote = trimmed.first,
+            quote == "\"" || quote == "'",
+            trimmed.last == quote
+        else {
+            return nil
+        }
+        return String(trimmed.dropFirst().dropLast())
     }
 
     private static func providersBlock(profileID: UUID) -> [String] {

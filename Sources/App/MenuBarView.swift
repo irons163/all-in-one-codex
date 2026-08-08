@@ -7,6 +7,25 @@ struct MenuBarView: View {
 
     var body: some View {
         Group {
+            if appState.restartRequired {
+                RestartRequiredBanner()
+                Divider()
+            }
+
+            ModelCatalogStatusView(
+                status: appState.modelCatalogStatus,
+                compact: true
+            )
+
+            if appState.profileItems.contains(where: { $0.requiresLoopbackBridge }) {
+                BridgeStatusBadge(status: appState.bridgeStatus)
+                Text("需要時由 Apply 自動啟動；不需另外手動啟動。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
             if appState.profileItems.isEmpty {
                 Text("尚無 profiles")
             } else {

@@ -10,6 +10,13 @@ struct ContentView: View {
             detailContent
         }
         .frame(minWidth: 900, minHeight: 560)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if appState.restartRequired {
+                RestartRequiredBanner()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            }
+        }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -81,18 +88,34 @@ struct ContentView: View {
         }
         .navigationTitle("Profiles")
         .safeAreaInset(edge: .bottom) {
-            if appState.isBusy {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("處理中…")
+            VStack(alignment: .leading, spacing: 8) {
+                if let selectedProfileItem = appState.selectedProfileItem,
+                   selectedProfileItem.requiresLoopbackBridge
+                {
+                    BridgeStatusBadge(status: appState.bridgeStatus)
+                    Text("需要 bridge 時，Apply 會自動啟動；不需另外手動啟動。")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-                .background(.bar)
+
+                ModelCatalogStatusView(
+                    status: appState.modelCatalogStatus,
+                    compact: true
+                )
+
+                if appState.isBusy {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("處理中…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(.bar)
         }
     }
 
@@ -160,13 +183,102 @@ struct BridgeStatusBadge: View {
     }
 }
 
+struct RestartRequiredBanner: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.clockwise.circle.fill")
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("需要重新啟動 Codex")
+                    .font(.headline)
+                Text(AppState.restartRequiredMessage)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button("隱藏") {
+                appState.dismissRestartRequired()
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("需要重新啟動 Codex。\(AppState.restartRequiredMessage)")
+    }
+}
+
+struct ModelCatalogStatusView: View {
+    let status: AppState.ModelCatalogStatus
+    let compact: Bool
+
+    init(status: AppState.ModelCatalogStatus, compact: Bool = false) {
+        self.status = status
+        self.compact = compact
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 2 : 4) {
+            switch status.state {
+            case .pending:
+                Label(
+                    "Codex model catalog：Apply 時建立",
+                    systemImage: "doc.badge.plus"
+                )
+                .foregroundStyle(.secondary)
+            case .applied:
+                if let modelCount = status.modelCount {
+                    Label(
+                        "已建立 Codex model catalog（\(modelCount) 個 models）",
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .foregroundStyle(.green)
+                } else {
+                    Label(
+                        "已建立 Codex model catalog",
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .foregroundStyle(.green)
+                }
+            case .restored:
+                Label(
+                    "Codex model catalog：已隨 Undo 復原",
+                    systemImage: "arrow.uturn.backward.circle"
+                )
+                .foregroundStyle(.secondary)
+            }
+
+            if compact {
+                Text("Apply 後需完全退出並重新啟動 Codex，才能讀取 catalog。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(
+                    "OpenCode Go 的 All-in-One model picker 包含 DeepSeek 等 custom models；"
+                    + "Apply 後需重啟 Codex 才會重新讀取 catalog。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .font(compact ? .caption : .callout)
+    }
+}
+
 private extension OpenCodeGoBridgeStatus {
     var displayName: String {
         switch self {
         case .running:
             return "Bridge：執行中"
         case .stopped:
-            return "Bridge：未啟動"
+            return "Bridge：Apply 時自動啟動"
         }
     }
 
@@ -175,7 +287,7 @@ private extension OpenCodeGoBridgeStatus {
         case .running:
             return "checkmark.circle.fill"
         case .stopped:
-            return "exclamationmark.triangle.fill"
+            return "bolt.horizontal.circle"
         }
     }
 

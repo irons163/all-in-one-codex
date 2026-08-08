@@ -17,6 +17,52 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(openRouter.providerID, "all_in_one_openrouter")
     }
 
+    func testCodexModelCatalogUsesCCSwitchCompatibleSchemaAndOpenCodeGoModels() throws {
+        let catalog = try CodexModelCatalog.make(
+            for: makeProfile(presetID: .openCodeGo)
+        )
+        let data = try catalog.encodedData()
+        let decoded = try CodexModelCatalog.decodeValidated(from: data)
+        let modelIDs = Set(catalog.models.map(\.slug))
+        let expectedIDs = Set(
+            ProviderCatalog.openCodeGoModels
+                .filter {
+                    $0.wireAPI == .responses || $0.wireAPI == .chatCompletions
+                }
+                .map(\.modelID)
+        )
+
+        XCTAssertEqual(decoded, catalog)
+        XCTAssertEqual(modelIDs, expectedIDs)
+        XCTAssertEqual(catalog.models.count, 12)
+        XCTAssertTrue(modelIDs.contains("gpt-5.6-luna"))
+        XCTAssertTrue(modelIDs.contains("deepseek-v4-flash"))
+        XCTAssertTrue(modelIDs.contains("deepseek-v4-pro"))
+
+        let flash = try XCTUnwrap(catalog.models.first { $0.slug == "deepseek-v4-flash" })
+        XCTAssertEqual(flash.displayName, "deepseek-v4-flash")
+        XCTAssertEqual(flash.description, "deepseek-v4-flash")
+        XCTAssertEqual(flash.shellType, "shell_command")
+        XCTAssertTrue(flash.supportsReasoningSummaries)
+        XCTAssertFalse(flash.baseInstructions.isEmpty)
+
+        let document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertNotNil(document["models"] as? [[String: Any]])
+    }
+
+    func testCodexModelCatalogIncludesCurrentOpenRouterCustomModelOnly() throws {
+        let profile = makeProfile(
+            presetID: .openRouter,
+            model: "vendor/custom-model"
+        )
+        let catalog = try CodexModelCatalog.make(for: profile)
+
+        XCTAssertEqual(catalog.models.map(\.slug), ["vendor/custom-model"])
+        XCTAssertEqual(catalog.models.first?.displayName, "vendor/custom-model")
+    }
+
     func testProjectsBothPresetsWithCommandBackedAuthentication() throws {
         let projector = CodexConfigProjector()
 
@@ -106,6 +152,35 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertFalse(projection.contains("model_provider = \"legacy-provider\""))
     }
 
+    func testProjectionClaimsOnlyTheAppOwnedModelCatalogPointer() throws {
+        let projector = CodexConfigProjector()
+        let profile = makeProfile(presetID: .openCodeGo)
+        let projected = try projector.project(original: "# User configuration\n", profile: profile)
+        let projectedAgain = try projector.project(original: projected, profile: profile)
+
+        XCTAssertTrue(projected.contains(CodexConfigProjector.catalogPointerMarker))
+        XCTAssertTrue(
+            projected.contains(
+                "model_catalog_json = \"\(CodexModelCatalog.filename)\""
+            )
+        )
+        XCTAssertEqual(
+            projectedAgain.components(separatedBy: "model_catalog_json =").count - 1,
+            1
+        )
+
+        let foreignPointer = """
+        model_catalog_json = "my-custom-models.json"
+        [mcp_servers.example]
+        command = "example"
+        """
+        XCTAssertThrowsError(
+            try projector.project(original: foreignPointer, profile: profile)
+        ) { error in
+            XCTAssertEqual(error as? CodexSwitchError, .foreignModelCatalogPointer)
+        }
+    }
+
     func testMalformedManagedMarkerIsConflict() {
         let original = """
         # BEGIN ALL-IN-ONE-CODEX ACTIVE
@@ -142,9 +217,14 @@ final class CodexCoreTests: XCTestCase {
         let preview = try adapter.preview(profile: profile)
         XCTAssertFalse(preview.projected.contains(keyMaterial))
 
-        _ = try adapter.apply(profile: profile)
+        let receipt = try adapter.apply(profile: profile)
         let appliedConfiguration = try String(contentsOf: configURL, encoding: .utf8)
+        let catalogURL = try XCTUnwrap(receipt.catalogURL)
+        let appliedCatalog = try String(contentsOf: catalogURL, encoding: .utf8)
         XCTAssertFalse(appliedConfiguration.contains(keyMaterial))
+        XCTAssertFalse(appliedCatalog.contains(keyMaterial))
+        XCTAssertFalse(appliedCatalog.contains("http://"))
+        XCTAssertFalse(appliedCatalog.contains("https://"))
     }
 
     func testApplyBacksUpAtomicallyUndoesAndDetectsHashConflict() throws {
@@ -170,20 +250,120 @@ final class CodexCoreTests: XCTestCase {
 
         let receipt = try adapter.apply(profile: profile)
         XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.backupURL.path))
+        let catalogURL = try XCTUnwrap(receipt.catalogURL)
+        let catalogBackupURL = try XCTUnwrap(receipt.catalogBackupURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: catalogURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: catalogBackupURL.path))
         XCTAssertNotEqual(try String(contentsOf: configURL, encoding: .utf8), original)
 
         let attributes = try FileManager.default.attributesOfItem(atPath: configURL.path)
         let permissions = try XCTUnwrap((attributes[.posixPermissions] as? NSNumber)?.intValue)
         XCTAssertEqual(permissions & 0o777, 0o600)
+        let catalogAttributes = try FileManager.default.attributesOfItem(atPath: catalogURL.path)
+        let catalogPermissions = try XCTUnwrap(
+            (catalogAttributes[.posixPermissions] as? NSNumber)?.intValue
+        )
+        XCTAssertEqual(catalogPermissions & 0o777, 0o600)
+        let directoryAttributes = try FileManager.default.attributesOfItem(
+            atPath: configDirectory.path
+        )
+        let directoryPermissions = try XCTUnwrap(
+            (directoryAttributes[.posixPermissions] as? NSNumber)?.intValue
+        )
+        XCTAssertEqual(directoryPermissions & 0o777, 0o700)
 
         try adapter.undo(receipt)
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: catalogURL.path))
 
         let secondReceipt = try adapter.apply(profile: profile)
         try Data("# External edit\n".utf8).write(to: configURL)
         XCTAssertThrowsError(try adapter.undo(secondReceipt)) { error in
             XCTAssertEqual(error as? CodexSwitchError, .configurationChanged)
         }
+    }
+
+    func testApplyAndUndoRestoreBothConfigurationAndExistingCatalog() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configDirectory = directoryURL.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        let configURL = configDirectory.appendingPathComponent("config.toml")
+        let catalogURL = configDirectory.appendingPathComponent(CodexModelCatalog.filename)
+        let originalConfiguration = "approval_policy = \"on-request\"\n"
+        let originalCatalog = try CodexModelCatalog.make(
+            for: makeProfile(presetID: .openRouter, model: "vendor/original-model")
+        ).encodedData()
+        try Data(originalConfiguration.utf8).write(to: configURL)
+        try originalCatalog.write(to: catalogURL)
+
+        let profile = makeProfile(presetID: .openRouter, model: "vendor/new-model")
+        let credentials = FakeCredentialStore()
+        try credentials.save(Data("test-credential".utf8), for: profile.id)
+        let adapter = CodexClientAdapter(configURL: configURL, credentialStore: credentials)
+
+        let receipt = try adapter.apply(profile: profile)
+        XCTAssertNotEqual(try Data(contentsOf: configURL), Data(originalConfiguration.utf8))
+        XCTAssertNotEqual(try Data(contentsOf: catalogURL), originalCatalog)
+
+        try adapter.undo(receipt)
+        XCTAssertEqual(try Data(contentsOf: configURL), Data(originalConfiguration.utf8))
+        XCTAssertEqual(try Data(contentsOf: catalogURL), originalCatalog)
+    }
+
+    func testUndoRejectsCatalogHashConflictWithoutRestoringConfiguration() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configDirectory = directoryURL.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        let configURL = configDirectory.appendingPathComponent("config.toml")
+        let originalConfiguration = "approval_policy = \"on-request\"\n"
+        try Data(originalConfiguration.utf8).write(to: configURL)
+
+        let profile = makeProfile(presetID: .openCodeGo)
+        let credentials = FakeCredentialStore()
+        try credentials.save(Data("test-credential".utf8), for: profile.id)
+        let adapter = CodexClientAdapter(
+            configURL: configURL,
+            credentialStore: credentials,
+            bridgeManager: FakeBridgeManager()
+        )
+
+        let receipt = try adapter.apply(profile: profile)
+        let catalogURL = try XCTUnwrap(receipt.catalogURL)
+        let changedCatalog = try CodexModelCatalog.make(
+            for: makeProfile(presetID: .openRouter, model: "vendor/changed-model")
+        ).encodedData()
+        try changedCatalog.write(to: catalogURL)
+
+        XCTAssertThrowsError(try adapter.undo(receipt)) { error in
+            XCTAssertEqual(error as? CodexSwitchError, .modelCatalogChanged)
+        }
+        XCTAssertNotEqual(
+            try Data(contentsOf: configURL),
+            Data(originalConfiguration.utf8)
+        )
+    }
+
+    func testLegacySwitchReceiptDecodesWithoutCatalogFields() throws {
+        let legacyJSON = """
+        {
+          "backupURL": "file:///tmp/legacy-config-backup",
+          "beforeHash": "before",
+          "afterHash": "after",
+          "timestamp": 0,
+          "originalConfigExisted": true
+        }
+        """
+
+        let receipt = try JSONDecoder().decode(SwitchReceipt.self, from: Data(legacyJSON.utf8))
+        XCTAssertNil(receipt.catalogURL)
+        XCTAssertNil(receipt.catalogBackupURL)
+        XCTAssertNil(receipt.catalogBeforeHash)
+        XCTAssertNil(receipt.catalogAfterHash)
+        XCTAssertFalse(receipt.originalCatalogExisted)
     }
 
     func testProfileRepositoryRoundTripsMetadataWithoutCredentials() async throws {
@@ -784,6 +964,41 @@ final class CodexCoreTests: XCTestCase {
             ).statusCode,
             400
         )
+    }
+
+    func testLoopbackModelsEndpointsReturnOpenAIListFromCatalogSSOT() async throws {
+        let bridge = OpenCodeGoBridgeManager(port: 0)
+        try bridge.ensureRunning()
+        defer { bridge.stop() }
+
+        let port = try XCTUnwrap(bridge.localPort)
+        let expectedModelIDs = Set(CodexModelCatalog.bridgeModelIDs)
+        var responseBodies: [Data] = []
+
+        for path in ["/models", "/v1/models"] {
+            let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)\(path)"))
+            let (data, response) = try await URLSession.shared.data(from: url)
+            let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+            let body = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: data) as? [String: Any]
+            )
+            let models = try XCTUnwrap(body["data"] as? [[String: Any]])
+
+            XCTAssertEqual(httpResponse.statusCode, 200)
+            XCTAssertEqual(body["object"] as? String, "list")
+            XCTAssertEqual(
+                Set(models.compactMap { $0["id"] as? String }),
+                expectedModelIDs
+            )
+            XCTAssertTrue(models.allSatisfy { $0["object"] as? String == "model" })
+            XCTAssertTrue(models.allSatisfy { $0["owned_by"] as? String == "all-in-one-codex" })
+            XCTAssertTrue(models.contains { $0["id"] as? String == "deepseek-v4-flash" })
+            XCTAssertTrue(models.contains { $0["id"] as? String == "deepseek-v4-pro" })
+            responseBodies.append(data)
+        }
+
+        XCTAssertEqual(responseBodies.count, 2)
+        XCTAssertEqual(responseBodies[0], responseBodies[1])
     }
 
     func testPrepareForUseStartsOnlyForAnActiveBridgeConfiguration() throws {

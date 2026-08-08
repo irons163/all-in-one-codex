@@ -7,6 +7,12 @@ struct ProfileEditorView: View {
 
     var body: some View {
         Form {
+            if appState.restartRequired {
+                Section {
+                    RestartRequiredBanner()
+                }
+            }
+
             Section("Profile") {
                 TextField("Name", text: $draft.name)
                     .textFieldStyle(.roundedBorder)
@@ -102,6 +108,15 @@ struct ProfileEditorView: View {
                             : Color.secondary
                     )
 
+                if route.bridgeEnabled {
+                    Label(
+                        "Bridge 會在 Apply 時由 All-in-One Codex 自動啟動；不需另外手動啟動。",
+                        systemImage: "bolt.horizontal.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
                 if !route.isKnown {
                     Label(
                         "Core 會拒絕這個 model；請從清單選擇支援項目或修正輸入。",
@@ -109,6 +124,43 @@ struct ProfileEditorView: View {
                     )
                     .font(.caption)
                     .foregroundStyle(.orange)
+                }
+            }
+
+            Section("Codex model catalog") {
+                if let modelCatalogCount {
+                    Label(
+                        modelCatalogMatches
+                            ? "已建立 Codex model catalog（\(modelCatalogCount) 個 models）"
+                            : "Apply 時建立 Codex model catalog（\(modelCatalogCount) 個 models）",
+                        systemImage: modelCatalogMatches
+                            ? "checkmark.circle.fill"
+                            : "doc.badge.plus"
+                    )
+                    .foregroundStyle(modelCatalogMatches ? Color.green : Color.secondary)
+                } else {
+                    Label(
+                        "Apply 時建立 Codex model catalog；請選擇有效 model。",
+                        systemImage: "doc.badge.plus"
+                    )
+                    .foregroundStyle(.secondary)
+                }
+
+                Text(
+                    "OpenCode Go 的 model picker 仍來自 All-in-One source list，包含 DeepSeek 等 custom models；"
+                    + "這裡只顯示摘要，不會把完整 catalog JSON 放到主畫面。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Text("Apply 後 Codex App/CLI 不會熱載入 catalog；請完全退出並重新啟動，再建立新 task。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if appState.modelCatalogStatus.isApplied, !modelCatalogMatches {
+                    Text("目前已套用的 catalog 對應另一個 profile 或 model；再次 Apply 會更新它。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
 
@@ -220,6 +272,20 @@ struct ProfileEditorView: View {
             model: draft.model
         )
     }
+
+    private var modelCatalogCount: Int? {
+        appState.modelCatalogCount(
+            for: draft.presetKey,
+            model: draft.model
+        )
+    }
+
+    private var modelCatalogMatches: Bool {
+        appState.modelCatalogStatus.matches(
+            profileID: draft.id,
+            model: draft.model
+        )
+    }
 }
 
 private struct PreviewSection: View {
@@ -274,6 +340,13 @@ private struct PreviewSection: View {
             LabeledContent("Model") {
                 Text(preview.model)
             }
+            LabeledContent("Codex model catalog") {
+                if let modelCatalogCount = preview.modelCatalogCount {
+                    Text("Apply 時建立 \(modelCatalogCount) 個 models")
+                } else {
+                    Text("Apply 時建立")
+                }
+            }
 
             ForEach(preview.changes, id: \.self) { change in
                 Label(change, systemImage: "arrow.right")
@@ -286,7 +359,7 @@ private struct PreviewSection: View {
                     .font(.callout)
             }
 
-            DisclosureGroup("Projected config.toml") {
+            DisclosureGroup("Projected config.toml（不含 API key）") {
                 TextEditor(text: .constant(preview.projectedConfig))
                     .font(.system(.caption, design: .monospaced))
                     .frame(minHeight: 140)

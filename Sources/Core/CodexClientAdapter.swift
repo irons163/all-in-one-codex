@@ -9,19 +9,80 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
     public let afterHash: String
     public let timestamp: Date
     public let originalConfigExisted: Bool
+    public let catalogURL: URL?
+    public let catalogBackupURL: URL?
+    public let catalogBeforeHash: String?
+    public let catalogAfterHash: String?
+    public let originalCatalogExisted: Bool
 
     public init(
         backupURL: URL,
         beforeHash: String,
         afterHash: String,
         timestamp: Date,
-        originalConfigExisted: Bool
+        originalConfigExisted: Bool,
+        catalogURL: URL? = nil,
+        catalogBackupURL: URL? = nil,
+        catalogBeforeHash: String? = nil,
+        catalogAfterHash: String? = nil,
+        originalCatalogExisted: Bool = false
     ) {
         self.backupURL = backupURL
         self.beforeHash = beforeHash
         self.afterHash = afterHash
         self.timestamp = timestamp
         self.originalConfigExisted = originalConfigExisted
+        self.catalogURL = catalogURL
+        self.catalogBackupURL = catalogBackupURL
+        self.catalogBeforeHash = catalogBeforeHash
+        self.catalogAfterHash = catalogAfterHash
+        self.originalCatalogExisted = originalCatalogExisted
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case backupURL
+        case beforeHash
+        case afterHash
+        case timestamp
+        case originalConfigExisted
+        case catalogURL
+        case catalogBackupURL
+        case catalogBeforeHash
+        case catalogAfterHash
+        case originalCatalogExisted
+    }
+
+    /// Older receipts only recorded `config.toml`. Decode their missing catalog
+    /// fields as an intentional configuration-only transaction.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        backupURL = try container.decode(URL.self, forKey: .backupURL)
+        beforeHash = try container.decode(String.self, forKey: .beforeHash)
+        afterHash = try container.decode(String.self, forKey: .afterHash)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        originalConfigExisted = try container.decode(Bool.self, forKey: .originalConfigExisted)
+        catalogURL = try container.decodeIfPresent(URL.self, forKey: .catalogURL)
+        catalogBackupURL = try container.decodeIfPresent(URL.self, forKey: .catalogBackupURL)
+        catalogBeforeHash = try container.decodeIfPresent(String.self, forKey: .catalogBeforeHash)
+        catalogAfterHash = try container.decodeIfPresent(String.self, forKey: .catalogAfterHash)
+        originalCatalogExisted = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .originalCatalogExisted
+        ) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(backupURL, forKey: .backupURL)
+        try container.encode(beforeHash, forKey: .beforeHash)
+        try container.encode(afterHash, forKey: .afterHash)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(originalConfigExisted, forKey: .originalConfigExisted)
+        try container.encodeIfPresent(catalogURL, forKey: .catalogURL)
+        try container.encodeIfPresent(catalogBackupURL, forKey: .catalogBackupURL)
+        try container.encodeIfPresent(catalogBeforeHash, forKey: .catalogBeforeHash)
+        try container.encodeIfPresent(catalogAfterHash, forKey: .catalogAfterHash)
+        try container.encode(originalCatalogExisted, forKey: .originalCatalogExisted)
     }
 }
 
@@ -51,6 +112,12 @@ public struct CodexClientAdapter: ClientAdapter {
             .appendingPathComponent("config.toml", isDirectory: false)
     }
 
+    public static var defaultCatalogURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent(CodexModelCatalog.filename, isDirectory: false)
+    }
+
     public let configURL: URL
     private let credentialStore: any CredentialStoring
     private let projector: CodexConfigProjector
@@ -72,6 +139,12 @@ public struct CodexClientAdapter: ClientAdapter {
         self.bridgeManager = bridgeManager
     }
 
+    public var catalogURL: URL {
+        configURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(CodexModelCatalog.filename, isDirectory: false)
+    }
+
     /// Starts the loopback bridge only when the active existing configuration
     /// points Codex at the bridge provider. This prevents an OpenRouter-only
     /// installation from claiming the bridge port during launch.
@@ -85,67 +158,134 @@ public struct CodexClientAdapter: ClientAdapter {
 
     public func preview(profile: ProviderProfile) throws -> SwitchPreview {
         let snapshot = try readConfiguration()
+        let catalog = try CodexModelCatalog.make(for: profile)
         let projected = try projector.project(original: snapshot.text, profile: profile)
         let presetName = ProviderCatalog.preset(for: profile.presetID)?.displayName ?? "provider"
 
         return SwitchPreview(
             original: snapshot.text,
             projected: projected,
-            summary: "Set Codex to \(presetName) with model \(profile.model)."
+            summary: "Set Codex to \(presetName) with model \(profile.model) and advertise \(catalog.models.count) models."
         )
     }
 
     public func apply(profile: ProviderProfile) throws -> SwitchReceipt {
         try requireCredential(for: profile.id)
         let route = try ProviderCatalog.route(for: profile)
+        let configurationSnapshot = try readConfiguration()
+        let catalog = try CodexModelCatalog.make(for: profile)
+        let projected = try projector.project(
+            original: configurationSnapshot.text,
+            profile: profile
+        )
+        let ownedCatalogURL = try ownedCatalogURL()
+        let catalogSnapshot = try readCatalogSnapshot(
+            at: ownedCatalogURL,
+            validateSchema: true
+        )
+        let catalogData = try catalog.encodedData()
+        let projectedData = Data(projected.utf8)
+        let timestamp = Date()
+        let backupURL = try createBackup(
+            for: configurationSnapshot.data,
+            sourceURL: configURL,
+            timestamp: timestamp
+        )
+        let catalogBackupURL = try createBackup(
+            for: catalogSnapshot.data,
+            sourceURL: ownedCatalogURL,
+            timestamp: timestamp
+        )
+
         if route.requiresLoopbackBridge {
             // The listener must be available before Codex is pointed at it.
             try bridgeManager.ensureRunning()
         }
-
-        let snapshot = try readConfiguration()
-        let projected = try projector.project(original: snapshot.text, profile: profile)
-        let timestamp = Date()
-        let backupURL = try createBackup(for: snapshot.data, timestamp: timestamp)
-        let projectedData = Data(projected.utf8)
-
-        try atomicallyWrite(projectedData, to: configURL)
+        try writeTransaction(
+            catalogData: catalogData,
+            configurationData: projectedData,
+            originalCatalog: catalogSnapshot,
+            originalConfiguration: configurationSnapshot.fileSnapshot,
+            catalogURL: ownedCatalogURL
+        )
 
         return SwitchReceipt(
             backupURL: backupURL,
-            beforeHash: hash(snapshot.data),
+            beforeHash: hash(configurationSnapshot.data),
             afterHash: hash(projectedData),
             timestamp: timestamp,
-            originalConfigExisted: snapshot.existed
+            originalConfigExisted: configurationSnapshot.existed,
+            catalogURL: ownedCatalogURL,
+            catalogBackupURL: catalogBackupURL,
+            catalogBeforeHash: hash(catalogSnapshot.data),
+            catalogAfterHash: hash(catalogData),
+            originalCatalogExisted: catalogSnapshot.existed
         )
     }
 
     public func undo(_ receipt: SwitchReceipt) throws {
-        let current = try readConfiguration()
-        guard current.existed, hash(current.data) == receipt.afterHash else {
+        let currentConfiguration = try readConfiguration()
+        guard
+            currentConfiguration.existed,
+            hash(currentConfiguration.data) == receipt.afterHash
+        else {
             throw CodexSwitchError.configurationChanged
         }
 
-        let backupData: Data
-        do {
-            backupData = try Data(contentsOf: receipt.backupURL)
-        } catch {
-            throw CodexSwitchError.backupUnavailable
-        }
-
-        guard hash(backupData) == receipt.beforeHash else {
+        let configurationBackup = try readBackup(at: receipt.backupURL)
+        guard hash(configurationBackup) == receipt.beforeHash else {
             throw CodexSwitchError.backupIntegrityConflict
         }
 
-        if receipt.originalConfigExisted {
-            try atomicallyWrite(backupData, to: configURL)
-        } else {
-            do {
-                try FileManager.default.removeItem(at: configURL)
-            } catch {
-                throw CodexSwitchError.unableToWriteConfiguration
-            }
+        let originalConfiguration = FileSnapshot(
+            data: configurationBackup,
+            existed: receipt.originalConfigExisted
+        )
+
+        guard let catalogTransaction = try catalogTransaction(from: receipt) else {
+            try restore(snapshot: originalConfiguration, to: configURL)
+            return
         }
+
+        let ownedCatalogURL = try ownedCatalogURL()
+        guard
+            catalogTransaction.catalogURL.standardizedFileURL
+                == ownedCatalogURL.standardizedFileURL
+        else {
+            throw CodexModelCatalogError.unsafeCatalogPath
+        }
+        try CodexModelCatalog.validateOwnedCatalogURL(
+            ownedCatalogURL,
+            for: configURL
+        )
+
+        let currentCatalog = try readCatalogSnapshot(
+            at: ownedCatalogURL,
+            validateSchema: false
+        )
+        guard
+            currentCatalog.existed,
+            hash(currentCatalog.data) == catalogTransaction.afterHash
+        else {
+            throw CodexSwitchError.modelCatalogChanged
+        }
+
+        let catalogBackup = try readBackup(at: catalogTransaction.backupURL)
+        guard hash(catalogBackup) == catalogTransaction.beforeHash else {
+            throw CodexSwitchError.backupIntegrityConflict
+        }
+
+        let originalCatalog = FileSnapshot(
+            data: catalogBackup,
+            existed: catalogTransaction.originalExisted
+        )
+        try restoreTransaction(
+            catalog: originalCatalog,
+            configuration: originalConfiguration,
+            currentCatalog: currentCatalog,
+            currentConfiguration: currentConfiguration.fileSnapshot,
+            catalogURL: ownedCatalogURL
+        )
     }
 
     private func requireCredential(for profileID: UUID) throws {
@@ -179,29 +319,100 @@ public struct CodexClientAdapter: ClientAdapter {
         return ConfigurationSnapshot(text: text, data: data, existed: true)
     }
 
-    private func createBackup(for data: Data, timestamp: Date) throws -> URL {
-        let directoryURL = configURL
+    private func ownedCatalogURL() throws -> URL {
+        let url = try CodexModelCatalog.catalogURL(for: configURL)
+        try CodexModelCatalog.validateOwnedCatalogURL(url, for: configURL)
+        return url
+    }
+
+    private func readCatalogSnapshot(
+        at url: URL,
+        validateSchema: Bool
+    ) throws -> FileSnapshot {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: url.path) else {
+            return FileSnapshot(data: Data(), existed: false)
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw CodexModelCatalogError.unreadableCatalog
+        }
+        guard data.count <= CodexModelCatalog.maximumCatalogBytes else {
+            throw CodexModelCatalogError.catalogTooLarge
+        }
+        if validateSchema {
+            _ = try CodexModelCatalog.decodeValidated(from: data)
+        }
+        return FileSnapshot(data: data, existed: true)
+    }
+
+    private func readBackup(at url: URL) throws -> Data {
+        do {
+            return try Data(contentsOf: url)
+        } catch {
+            throw CodexSwitchError.backupUnavailable
+        }
+    }
+
+    private func catalogTransaction(
+        from receipt: SwitchReceipt
+    ) throws -> CatalogTransaction? {
+        let fieldPresence = [
+            receipt.catalogURL != nil,
+            receipt.catalogBackupURL != nil,
+            receipt.catalogBeforeHash != nil,
+            receipt.catalogAfterHash != nil
+        ]
+
+        guard fieldPresence.contains(true) else {
+            guard !receipt.originalCatalogExisted else {
+                throw CodexSwitchError.backupIntegrityConflict
+            }
+            return nil
+        }
+        guard fieldPresence.allSatisfy({ $0 }) else {
+            throw CodexSwitchError.backupIntegrityConflict
+        }
+        guard
+            let catalogURL = receipt.catalogURL,
+            let backupURL = receipt.catalogBackupURL,
+            let beforeHash = receipt.catalogBeforeHash,
+            let afterHash = receipt.catalogAfterHash
+        else {
+            throw CodexSwitchError.backupIntegrityConflict
+        }
+
+        return CatalogTransaction(
+            catalogURL: catalogURL,
+            backupURL: backupURL,
+            beforeHash: beforeHash,
+            afterHash: afterHash,
+            originalExisted: receipt.originalCatalogExisted
+        )
+    }
+
+    private func createBackup(
+        for data: Data,
+        sourceURL: URL,
+        timestamp: Date
+    ) throws -> URL {
+        let directoryURL = sourceURL
             .deletingLastPathComponent()
             .appendingPathComponent("backups", isDirectory: true)
 
-        do {
-            try FileManager.default.createDirectory(
-                at: directoryURL,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-        } catch {
-            throw CodexSwitchError.unableToWriteConfiguration
-        }
+        try ensurePrivateDirectory(directoryURL)
 
         let timestampComponent = Self.backupTimestampFormatter.string(from: timestamp)
         var candidate = directoryURL.appendingPathComponent(
-            "\(configURL.lastPathComponent).backup-\(timestampComponent)"
+            "\(sourceURL.lastPathComponent).backup-\(timestampComponent)"
         )
         var collisionIndex = 1
         while FileManager.default.fileExists(atPath: candidate.path) {
             candidate = directoryURL.appendingPathComponent(
-                "\(configURL.lastPathComponent).backup-\(timestampComponent)-\(collisionIndex)"
+                "\(sourceURL.lastPathComponent).backup-\(timestampComponent)-\(collisionIndex)"
             )
             collisionIndex += 1
         }
@@ -210,8 +421,65 @@ public struct CodexClientAdapter: ClientAdapter {
         return candidate
     }
 
-    private func atomicallyWrite(_ data: Data, to destination: URL) throws {
-        let directoryURL = destination.deletingLastPathComponent()
+    private func writeTransaction(
+        catalogData: Data,
+        configurationData: Data,
+        originalCatalog: FileSnapshot,
+        originalConfiguration: FileSnapshot,
+        catalogURL: URL
+    ) throws {
+        do {
+            try atomicallyWrite(catalogData, to: catalogURL)
+            try atomicallyWrite(configurationData, to: configURL)
+        } catch {
+            do {
+                try restore(snapshot: originalConfiguration, to: configURL)
+                try restore(snapshot: originalCatalog, to: catalogURL)
+            } catch {
+                throw CodexSwitchError.unableToWriteConfiguration
+            }
+            throw error
+        }
+    }
+
+    private func restoreTransaction(
+        catalog: FileSnapshot,
+        configuration: FileSnapshot,
+        currentCatalog: FileSnapshot,
+        currentConfiguration: FileSnapshot,
+        catalogURL: URL
+    ) throws {
+        do {
+            try restore(snapshot: catalog, to: catalogURL)
+            try restore(snapshot: configuration, to: configURL)
+        } catch {
+            do {
+                try restore(snapshot: currentCatalog, to: catalogURL)
+                try restore(snapshot: currentConfiguration, to: configURL)
+            } catch {
+                throw CodexSwitchError.unableToWriteConfiguration
+            }
+            throw error
+        }
+    }
+
+    private func restore(snapshot: FileSnapshot, to destination: URL) throws {
+        if snapshot.existed {
+            try atomicallyWrite(snapshot.data, to: destination)
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: destination.path) else {
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: destination)
+        } catch {
+            throw CodexSwitchError.unableToWriteConfiguration
+        }
+    }
+
+    private func ensurePrivateDirectory(_ directoryURL: URL) throws {
         do {
             try FileManager.default.createDirectory(
                 at: directoryURL,
@@ -221,6 +489,15 @@ public struct CodexClientAdapter: ClientAdapter {
         } catch {
             throw CodexSwitchError.unableToWriteConfiguration
         }
+
+        guard directoryURL.path.withCString({ Darwin.chmod($0, mode_t(0o700)) }) == 0 else {
+            throw CodexSwitchError.unableToWriteConfiguration
+        }
+    }
+
+    private func atomicallyWrite(_ data: Data, to destination: URL) throws {
+        let directoryURL = destination.deletingLastPathComponent()
+        try ensurePrivateDirectory(directoryURL)
 
         let temporaryURL = directoryURL.appendingPathComponent(
             ".\(destination.lastPathComponent).\(UUID().uuidString).tmp"
@@ -428,4 +705,21 @@ private struct ConfigurationSnapshot {
     let text: String
     let data: Data
     let existed: Bool
+
+    var fileSnapshot: FileSnapshot {
+        FileSnapshot(data: data, existed: existed)
+    }
+}
+
+private struct FileSnapshot {
+    let data: Data
+    let existed: Bool
+}
+
+private struct CatalogTransaction {
+    let catalogURL: URL
+    let backupURL: URL
+    let beforeHash: String
+    let afterHash: String
+    let originalExisted: Bool
 }
