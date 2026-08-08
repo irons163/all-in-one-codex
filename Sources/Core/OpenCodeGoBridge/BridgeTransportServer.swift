@@ -560,80 +560,54 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
         upstreamRequest.setValue("text/event-stream, application/json", forHTTPHeaderField: "Accept")
         upstreamRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
 
-        let responseID = "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
-        let model = converted.model
-        let toolContext = converted.toolContext
-        let outputMode = converted.outputMode
-        let transport = self.transport
-        let toolCallCache = self.toolCallCache
-        let (stream, continuation) = AsyncStream<Data>.makeStream()
-
-        // Progressive SSE: yield response.created/in_progress before awaiting
-        // upstream, matching the early-flush intent of cc-switch streaming.
-        // Full token-delta conversion during upstream read remains follow-up work;
-        // terminal events still come from the shared buffered encoder.
-        Task {
-            do {
-                continuation.yield(
-                    try OpenCodeGoStreamingChatBridge.earlyLifecycleSSE(
-                        responseID: responseID,
-                        model: model
-                    )
+        // Keep the Chat→Responses body buffered until terminal conversion is
+        // complete. Early chunked `response.created` without matching completed
+        // token deltas made Codex report "stream disconnected before completion"
+        // on upstream 400s; restore the stable single-SSE response path.
+        do {
+            let upstream = try await transport.execute(upstreamRequest)
+            guard (200..<300).contains(upstream.statusCode) else {
+                let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+                    OpenCodeGoBridgeError.upstreamRejected,
+                    upstreamStatusCode: upstream.statusCode,
+                    upstreamErrorBody: upstream.body,
+                    model: converted.model
                 )
-                let upstream = try await transport.execute(upstreamRequest)
-                guard (200..<300).contains(upstream.statusCode) else {
-                    let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
-                        OpenCodeGoBridgeError.upstreamRejected,
-                        upstreamStatusCode: upstream.statusCode,
-                        upstreamErrorBody: upstream.body,
-                        model: model
-                    )
-                    continuation.yield(
-                        OpenCodeGoStreamingChatBridge.stripLeadingLifecycle(
-                            from: OpenCodeGoResponsesEventEncoder.failure(
-                                responseID: responseID,
-                                model: model,
-                                normalizedError: normalized
-                            )
-                        )
-                    )
-                    continuation.finish()
-                    return
-                }
-
-                let conversion = try OpenCodeGoChatResponseConverter.convert(
-                    chatResponse: upstream.body,
-                    contentType: upstream.headers["content-type"],
-                    fallbackModel: model,
-                    toolContext: toolContext,
-                    outputMode: outputMode,
-                    preferredResponseID: responseID
-                )
-                toolCallCache.store(
-                    responseID: conversion.responseID,
-                    toolCalls: conversion.toolCalls,
-                    reasoningContent: conversion.reasoningContent,
-                    reasoningContentPresent: conversion.reasoningContentPresent
-                )
-                continuation.yield(
-                    OpenCodeGoStreamingChatBridge.stripLeadingLifecycle(from: conversion.sse)
-                )
-            } catch {
-                let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(error)
-                continuation.yield(
-                    OpenCodeGoStreamingChatBridge.stripLeadingLifecycle(
-                        from: OpenCodeGoResponsesEventEncoder.failure(
-                            responseID: responseID,
-                            model: model,
-                            normalizedError: normalized
-                        )
+                return .sse(
+                    statusCode: normalized.statusCode,
+                    body: OpenCodeGoResponsesEventEncoder.failure(
+                        responseID: "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
+                        model: converted.model,
+                        normalizedError: normalized
                     )
                 )
             }
-            continuation.finish()
-        }
 
-        return .sseStream(stream)
+            let conversion = try OpenCodeGoChatResponseConverter.convert(
+                chatResponse: upstream.body,
+                contentType: upstream.headers["content-type"],
+                fallbackModel: converted.model,
+                toolContext: converted.toolContext,
+                outputMode: converted.outputMode
+            )
+            toolCallCache.store(
+                responseID: conversion.responseID,
+                toolCalls: conversion.toolCalls,
+                reasoningContent: conversion.reasoningContent,
+                reasoningContentPresent: conversion.reasoningContentPresent
+            )
+            return .sse(body: conversion.sse)
+        } catch {
+            let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(error)
+            return .sse(
+                statusCode: normalized.statusCode,
+                body: OpenCodeGoResponsesEventEncoder.failure(
+                    responseID: "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
+                    model: converted.model,
+                    normalizedError: normalized
+                )
+            )
+        }
     }
 
     private func handleResponsesPassthrough(
