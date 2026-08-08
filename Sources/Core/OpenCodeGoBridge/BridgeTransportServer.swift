@@ -40,8 +40,9 @@ public final class URLSessionOpenCodeGoBridgeTransport: OpenCodeGoBridgeTranspor
     }
 }
 
-/// Thread-safe owner of the fixed local listener used by Chat-only models.
-public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, @unchecked Sendable {
+/// Thread-safe owner of the fixed local listener used by Chat-only models and
+/// opt-in session-preserving routes.
+public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGoBridgeConfiguring, @unchecked Sendable {
     public static let port: UInt16 = 14_556
     public static let baseURL = ProviderCatalog.openCodeGoBridgeBaseURL
     public static let shared = OpenCodeGoBridgeManager()
@@ -51,6 +52,7 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, @unchecked
     private let transport: any OpenCodeGoBridgeTransport
     private let toolCallCache: OpenCodeGoToolCallCache
     private var server: OpenCodeGoLoopbackHTTPServer?
+    private var routingMode: OpenCodeGoBridgeRoutingMode = .legacyChat
 
     public init(
         port: UInt16 = OpenCodeGoBridgeManager.port,
@@ -85,7 +87,10 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, @unchecked
 
         let handler = OpenCodeGoBridgeRequestHandler(
             transport: transport,
-            toolCallCache: toolCallCache
+            toolCallCache: toolCallCache,
+            routingModeProvider: { [weak self] in
+                self?.routingModeSnapshot() ?? .legacyChat
+            }
         )
         let candidate = OpenCodeGoLoopbackHTTPServer(
             port: port,
@@ -104,13 +109,52 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, @unchecked
         lock.lock()
         let server = self.server
         self.server = nil
+        routingMode = .legacyChat
         lock.unlock()
         server?.stop()
+    }
+
+    /// Removes any retained session-preservation credential while preserving
+    /// the legacy bridge's existing inbound-bearer behavior.
+    func configureLegacyChatMode() {
+        lock.lock()
+        routingMode = .legacyChat
+        lock.unlock()
+    }
+
+    /// Atomically replaces the active preservation route and in-memory
+    /// Keychain credential. The value is never written to configuration,
+    /// logged, or reflected into bridge errors.
+    func configurePreservingSessions(
+        route: ProviderRoute,
+        credential: Data
+    ) {
+        lock.lock()
+        routingMode = .preservingSessions(
+            OpenCodeGoBridgePreservation(route: route, credential: credential)
+        )
+        lock.unlock()
+    }
+
+    private func routingModeSnapshot() -> OpenCodeGoBridgeRoutingMode {
+        lock.lock()
+        defer { lock.unlock() }
+        return routingMode
     }
 
     deinit {
         stop()
     }
+}
+
+private enum OpenCodeGoBridgeRoutingMode: Sendable {
+    case legacyChat
+    case preservingSessions(OpenCodeGoBridgePreservation)
+}
+
+private struct OpenCodeGoBridgePreservation: Sendable {
+    let route: ProviderRoute
+    let credential: Data
 }
 
 private struct OpenCodeGoBridgeHTTPRequest {
@@ -174,6 +218,48 @@ private struct OpenCodeGoBridgeHTTPResponse: Sendable {
             body: body
         )
     }
+
+    static func normalizedError(
+        _ error: Error,
+        upstreamStatusCode: Int
+    ) -> OpenCodeGoBridgeHTTPResponse {
+        let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+            error,
+            upstreamStatusCode: upstreamStatusCode
+        )
+        let object: [String: Any] = [
+            "error": [
+                "code": normalized.code,
+                "message": normalized.message,
+                "type": "invalid_request_error"
+            ]
+        ]
+        let body = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+        return OpenCodeGoBridgeHTTPResponse(
+            statusCode: normalized.statusCode,
+            headers: ["Content-Type": "application/json; charset=utf-8"],
+            body: body
+        )
+    }
+
+    static func upstream(
+        statusCode: Int,
+        headers: [String: String],
+        body: Data
+    ) -> OpenCodeGoBridgeHTTPResponse {
+        var responseHeaders: [String: String] = [:]
+        if let contentType = headers["content-type"] {
+            responseHeaders["Content-Type"] = contentType
+        }
+        if let cacheControl = headers["cache-control"] {
+            responseHeaders["Cache-Control"] = cacheControl
+        }
+        return OpenCodeGoBridgeHTTPResponse(
+            statusCode: statusCode,
+            headers: responseHeaders,
+            body: body
+        )
+    }
 }
 
 enum OpenCodeGoBridgeRoute {
@@ -198,20 +284,46 @@ enum OpenCodeGoBridgeRoute {
     static func acceptsModelList(_ path: String) -> Bool {
         modelListPaths.contains(path)
     }
+
+    /// Normalizes the alternate path spellings accepted from Codex into the
+    /// relative path appended to a provider's versioned base URL.
+    static func upstreamResponsesPath(for path: String) -> String? {
+        switch path {
+        case "/v1/responses", "/responses", "/v1/v1/responses", "/codex/v1/responses":
+            return "responses"
+        case "/v1/responses/compact", "/responses/compact":
+            return "responses/compact"
+        default:
+            return nil
+        }
+    }
 }
 
 private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
-    private static let upstreamURL = URL(string: "https://opencode.ai/zen/go/v1/chat/completions")!
+    private static let legacyChatUpstreamURL = URL(
+        string: "https://opencode.ai/zen/go/v1/chat/completions"
+    )!
+    /// Preserve mode starts from Codex's built-in OpenAI provider, whose
+    /// request may contain official-account metadata beyond Authorization.
+    /// Only representation metadata and negotiation are safe and necessary upstream.
+    private static let forwardedRequestHeaders: Set<String> = [
+        "accept",
+        "content-encoding",
+        "content-type"
+    ]
 
     private let transport: any OpenCodeGoBridgeTransport
     private let toolCallCache: OpenCodeGoToolCallCache
+    private let routingModeProvider: @Sendable () -> OpenCodeGoBridgeRoutingMode
 
     init(
         transport: any OpenCodeGoBridgeTransport,
-        toolCallCache: OpenCodeGoToolCallCache
+        toolCallCache: OpenCodeGoToolCallCache,
+        routingModeProvider: @escaping @Sendable () -> OpenCodeGoBridgeRoutingMode
     ) {
         self.transport = transport
         self.toolCallCache = toolCallCache
+        self.routingModeProvider = routingModeProvider
     }
 
     func handle(
@@ -246,13 +358,6 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
             )
             return
         }
-        if let encoding = request.headers["content-encoding"],
-           !encoding.isEmpty,
-           encoding.lowercased() != "identity"
-        {
-            completion(.normalizedError(OpenCodeGoBridgeError.unsupportedContentEncoding))
-            return
-        }
         guard
             let authorization = request.headers["authorization"],
             authorization.lowercased().hasPrefix("bearer "),
@@ -261,6 +366,85 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
                 .isEmpty == false
         else {
             completion(.normalizedError(OpenCodeGoBridgeError.missingAuthorization))
+            return
+        }
+
+        switch routingModeProvider() {
+        case .legacyChat:
+            // Legacy custom-provider mode keeps the existing contract: Codex
+            // supplies the Keychain-backed bearer through auth.command and
+            // the bridge converts only Chat Completions models.
+            handleChatRequest(
+                request,
+                upstreamURL: Self.legacyChatUpstreamURL,
+                authorization: authorization,
+                completion: completion
+            )
+        case .preservingSessions(let preservation):
+            // Deliberately do not pass the inbound official OAuth bearer into
+            // this branch. It proves a local Codex caller is present, but the
+            // selected profile's Keychain credential is the only upstream auth.
+            handlePreservingSessions(
+                request,
+                preservation: preservation,
+                completion: completion
+            )
+        }
+    }
+
+    private func handlePreservingSessions(
+        _ request: OpenCodeGoBridgeHTTPRequest,
+        preservation: OpenCodeGoBridgePreservation,
+        completion: @escaping @Sendable (OpenCodeGoBridgeHTTPResponse) -> Void
+    ) {
+        guard let authorization = Self.providerAuthorization(from: preservation.credential) else {
+            completion(.normalizedError(OpenCodeGoBridgeError.missingProviderCredential))
+            return
+        }
+
+        switch preservation.route.upstreamWireAPI {
+        case .chatCompletions:
+            guard let upstreamURL = Self.upstreamURL(
+                baseURL: preservation.route.upstreamBaseURL,
+                relativePath: "chat/completions"
+            ) else {
+                completion(.normalizedError(OpenCodeGoBridgeError.upstreamUnavailable))
+                return
+            }
+            handleChatRequest(
+                request,
+                upstreamURL: upstreamURL,
+                authorization: authorization,
+                completion: completion
+            )
+        case .responses:
+            handleResponsesPassthrough(
+                request,
+                route: preservation.route,
+                authorization: authorization,
+                completion: completion
+            )
+        case .anthropicMessages:
+            completion(.normalizedError(OpenCodeGoBridgeError.invalidRequest))
+        }
+    }
+
+    /// Retains the legacy Responses-to-Chat conversion path while making the
+    /// chosen upstream URL and credential explicit for preservation mode.
+    private func handleChatRequest(
+        _ request: OpenCodeGoBridgeHTTPRequest,
+        upstreamURL: URL,
+        authorization: String,
+        completion: @escaping @Sendable (OpenCodeGoBridgeHTTPResponse) -> Void
+    ) {
+        // Chat conversion must inspect the JSON body locally. Responses
+        // passthrough requests, in contrast, can preserve Codex's zstd body
+        // and Content-Encoding header without decoding it in the bridge.
+        if let encoding = request.headers["content-encoding"],
+           !encoding.isEmpty,
+           encoding.lowercased() != "identity"
+        {
+            completion(.normalizedError(OpenCodeGoBridgeError.unsupportedContentEncoding))
             return
         }
 
@@ -275,14 +459,12 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
             return
         }
 
-        var upstreamRequest = URLRequest(url: Self.upstreamURL)
+        var upstreamRequest = URLRequest(url: upstreamURL)
         upstreamRequest.httpMethod = "POST"
         upstreamRequest.httpBody = converted.body
         upstreamRequest.timeoutInterval = URLSessionOpenCodeGoBridgeTransport.upstreamRequestTimeout
         upstreamRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         upstreamRequest.setValue("text/event-stream, application/json", forHTTPHeaderField: "Accept")
-        // This is the Keychain-backed credential supplied by Codex. It is
-        // forwarded only to the upstream request and never copied elsewhere.
         upstreamRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
 
         Task { [transport, toolCallCache] in
@@ -332,6 +514,91 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
                 )
             }
         }
+    }
+
+    private func handleResponsesPassthrough(
+        _ request: OpenCodeGoBridgeHTTPRequest,
+        route: ProviderRoute,
+        authorization: String,
+        completion: @escaping @Sendable (OpenCodeGoBridgeHTTPResponse) -> Void
+    ) {
+        guard
+            let relativePath = OpenCodeGoBridgeRoute.upstreamResponsesPath(for: request.path),
+            let upstreamURL = Self.upstreamURL(
+                baseURL: route.upstreamBaseURL,
+                relativePath: relativePath
+            )
+        else {
+            completion(.normalizedError(OpenCodeGoBridgeError.invalidRequest))
+            return
+        }
+
+        var upstreamRequest = URLRequest(url: upstreamURL)
+        upstreamRequest.httpMethod = "POST"
+        upstreamRequest.httpBody = request.body
+        upstreamRequest.timeoutInterval = URLSessionOpenCodeGoBridgeTransport.upstreamRequestTimeout
+        for (name, value) in request.headers where Self.forwardedRequestHeaders.contains(name) {
+            upstreamRequest.setValue(value, forHTTPHeaderField: name)
+        }
+        if upstreamRequest.value(forHTTPHeaderField: "Content-Type") == nil {
+            upstreamRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        if upstreamRequest.value(forHTTPHeaderField: "Accept") == nil {
+            upstreamRequest.setValue("text/event-stream, application/json", forHTTPHeaderField: "Accept")
+        }
+        // `authorization` came only from the selected Keychain profile. The
+        // incoming OAuth bearer is intentionally excluded from this request.
+        upstreamRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
+
+        Task { [transport] in
+            do {
+                let upstream = try await transport.execute(upstreamRequest)
+                guard (200..<300).contains(upstream.statusCode) else {
+                    completion(
+                        .normalizedError(
+                            OpenCodeGoBridgeError.upstreamRejected,
+                            upstreamStatusCode: upstream.statusCode
+                        )
+                    )
+                    return
+                }
+                completion(
+                    .upstream(
+                        statusCode: upstream.statusCode,
+                        headers: upstream.headers,
+                        body: upstream.body
+                    )
+                )
+            } catch {
+                completion(.normalizedError(error))
+            }
+        }
+    }
+
+    private static func providerAuthorization(from credential: Data) -> String? {
+        guard
+            let credential = String(data: credential, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !credential.isEmpty,
+            !credential.contains("\r"),
+            !credential.contains("\n")
+        else {
+            return nil
+        }
+        return "Bearer \(credential)"
+    }
+
+    private static func upstreamURL(baseURL: String, relativePath: String) -> URL? {
+        guard var components = URLComponents(string: baseURL) else {
+            return nil
+        }
+        let normalizedBasePath = components.path.hasSuffix("/")
+            ? String(components.path.dropLast())
+            : components.path
+        components.path = "\(normalizedBasePath)/\(relativePath)"
+        components.query = nil
+        components.fragment = nil
+        return components.url
     }
 }
 
@@ -563,12 +830,6 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
             .contains("chunked") == true
         {
             return .failure(.contentLengthRequired)
-        }
-        if let encoding = parsedHeader.headers["content-encoding"],
-           !encoding.isEmpty,
-           encoding.lowercased() != "identity"
-        {
-            return .failure(.unsupportedContentEncoding)
         }
         guard let rawLength = parsedHeader.headers["content-length"] else {
             return .failure(.contentLengthRequired)

@@ -17,6 +17,42 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(openRouter.providerID, "all_in_one_openrouter")
     }
 
+    func testProviderProfileLegacyJSONDefaultsPreserveSessionsToFalseAndRoundTripsTrue() throws {
+        let profileID = UUID(uuidString: "5F15F99C-8CFB-4778-9B4C-DFB3A5AF7C51")!
+        let legacyJSON = """
+        {
+          "id": "\(profileID.uuidString)",
+          "name": "Legacy profile",
+          "presetID": "openCodeGo",
+          "model": "glm-5.2",
+          "createdAt": 1700000000,
+          "updatedAt": 1700000100
+        }
+        """
+
+        let legacy = try JSONDecoder().decode(
+            ProviderProfile.self,
+            from: Data(legacyJSON.utf8)
+        )
+        XCTAssertFalse(legacy.preserveSessions)
+
+        let preserving = ProviderProfile(
+            id: profileID,
+            name: "Preserving profile",
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let roundTripped = try JSONDecoder().decode(
+            ProviderProfile.self,
+            from: JSONEncoder().encode(preserving)
+        )
+        XCTAssertEqual(roundTripped, preserving)
+        XCTAssertTrue(roundTripped.preserveSessions)
+    }
+
     func testCodexModelCatalogUsesCCSwitchCompatibleSchemaAndOpenCodeGoModels() throws {
         let catalog = try CodexModelCatalog.make(
             for: makeProfile(presetID: .openCodeGo)
@@ -1102,6 +1138,137 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertFalse(events.contains("fixture-secret-must-not-leak"))
     }
 
+    func testPreserveApplyConfiguresBridgeBeforeWritingAndKeepsCredentialOutOfFiles() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let catalogURL = configURL.deletingLastPathComponent()
+            .appendingPathComponent(CodexModelCatalog.filename)
+        let originalConfiguration = Data("approval_policy = \"never\"\n".utf8)
+        let originalCatalog = try CodexModelCatalog.make(
+            for: makeProfile(presetID: .openRouter, model: "vendor/original")
+        ).encodedData()
+        try originalConfiguration.write(to: configURL)
+        try originalCatalog.write(to: catalogURL)
+
+        let profileID = UUID(uuidString: "F566E13B-8CF5-40A2-AD33-0E718F71A4EF")!
+        let profile = ProviderProfile(
+            id: profileID,
+            name: "Preserving profile",
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let selectedCredential = Data("selected-keychain-key".utf8)
+        let credentials = FakeCredentialStore()
+        try credentials.save(selectedCredential, for: profile.id)
+        let bridge = ConfigurableFakeBridgeManager()
+        bridge.onEnsure = {
+            XCTAssertEqual(try Data(contentsOf: configURL), originalConfiguration)
+            XCTAssertEqual(try Data(contentsOf: catalogURL), originalCatalog)
+        }
+        let adapter = CodexClientAdapter(
+            configURL: configURL,
+            credentialStore: credentials,
+            bridgeManager: bridge
+        )
+
+        let receipt = try adapter.apply(profile: profile)
+        XCTAssertEqual(bridge.events, ["configure-preserve", "ensure"])
+        XCTAssertEqual(bridge.configuredCredential, selectedCredential)
+        XCTAssertEqual(bridge.configuredRoute, try ProviderCatalog.route(for: profile))
+        XCTAssertEqual(receipt.catalogURL?.standardizedFileURL, catalogURL.standardizedFileURL)
+
+        let configuration = try String(contentsOf: configURL, encoding: .utf8)
+        let catalog = try String(contentsOf: catalogURL, encoding: .utf8)
+        XCTAssertTrue(configuration.contains(CodexConfigProjector.preserveSessionsMarker))
+        XCTAssertTrue(configuration.contains("openai_base_url = \"\(ProviderCatalog.openCodeGoBridgeBaseURL)\""))
+        XCTAssertFalse(configuration.contains("model_provider ="))
+        XCTAssertFalse(configuration.contains(CodexConfigProjector.providersBeginMarker))
+        XCTAssertFalse(configuration.contains("auth.command"))
+        XCTAssertFalse(configuration.contains(String(data: selectedCredential, encoding: .utf8)!))
+        XCTAssertFalse(catalog.contains(String(data: selectedCredential, encoding: .utf8)!))
+    }
+
+    func testPreserveApplyFailsClosedWhenBridgeCannotConfigure() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let catalogURL = configURL.deletingLastPathComponent()
+            .appendingPathComponent(CodexModelCatalog.filename)
+        let originalConfiguration = Data("approval_policy = \"on-request\"\n".utf8)
+        let originalCatalog = try CodexModelCatalog.make(
+            for: makeProfile(presetID: .openRouter, model: "vendor/original")
+        ).encodedData()
+        try originalConfiguration.write(to: configURL)
+        try originalCatalog.write(to: catalogURL)
+
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true
+        )
+        let credentials = FakeCredentialStore()
+        try credentials.save(Data("selected-keychain-key".utf8), for: profile.id)
+        let adapter = CodexClientAdapter(
+            configURL: configURL,
+            credentialStore: credentials,
+            // This lightweight manager intentionally lacks the internal
+            // configuration seam, so the adapter must fail before any write.
+            bridgeManager: FakeBridgeManager()
+        )
+
+        XCTAssertThrowsError(try adapter.apply(profile: profile)) { error in
+            XCTAssertEqual(error as? OpenCodeGoBridgeError, .unableToStart)
+        }
+        XCTAssertEqual(try Data(contentsOf: configURL), originalConfiguration)
+        XCTAssertEqual(try Data(contentsOf: catalogURL), originalCatalog)
+    }
+
+    func testPrepareForUseRebuildsPreserveRouteAndReadsCredentialByMarkerProfileID() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let profileID = UUID(uuidString: "EE3ECF2B-67BB-43A4-9F6A-B3FD0F0E2375")!
+        let profile = ProviderProfile(
+            id: profileID,
+            name: "Marker profile",
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let projected = try CodexConfigProjector().project(
+            original: "approval_policy = \"never\"\n",
+            profile: profile
+        )
+        try Data(projected.utf8).write(to: configURL)
+
+        let selectedCredential = Data("marker-selected-key".utf8)
+        let credentials = FakeCredentialStore()
+        try credentials.save(selectedCredential, for: profile.id)
+        try credentials.save(Data("other-profile-key".utf8), for: UUID())
+        let bridge = ConfigurableFakeBridgeManager()
+        let adapter = CodexClientAdapter(
+            configURL: configURL,
+            credentialStore: credentials,
+            bridgeManager: bridge
+        )
+
+        try adapter.prepareForUse()
+        XCTAssertEqual(bridge.events, ["configure-preserve", "ensure"])
+        XCTAssertEqual(bridge.configuredCredential, selectedCredential)
+        let route = try XCTUnwrap(bridge.configuredRoute)
+        XCTAssertEqual(route.model, profile.model)
+        XCTAssertEqual(route.providerID, ProviderCatalog.openCodeGoBridgeProviderID)
+        XCTAssertEqual(route.baseURL, ProviderCatalog.openCodeGoBridgeBaseURL)
+        XCTAssertEqual(route.upstreamBaseURL, ProviderCatalog.openCodeGoOfficialBaseURL)
+        XCTAssertEqual(route.upstreamWireAPI, .chatCompletions)
+    }
+
     func testChatApplyEnsuresBridgeBeforeConfigurationAndDirectApplyDoesNot() throws {
         let directoryURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -1220,6 +1387,106 @@ final class CodexCoreTests: XCTestCase {
         }
     }
 
+    func testPreserveProjectionUsesOpenAIBaseURLMarkersWithoutCustomProviderAuth() throws {
+        let profileID = UUID(uuidString: "C3016E28-5D7F-4E26-8A3D-0C25C4C58AF1")!
+        let profile = ProviderProfile(
+            id: profileID,
+            name: "Preserving Chat profile",
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let original = """
+        # User-owned settings stay intact.
+        approval_policy = "never"
+
+        [mcp_servers.example]
+        command = "example-mcp"
+        """
+
+        let projected = try CodexConfigProjector().project(
+            original: original,
+            profile: profile
+        )
+
+        XCTAssertTrue(projected.contains(CodexConfigProjector.preserveSessionsMarker))
+        XCTAssertTrue(projected.contains(CodexConfigProjector.openAIBaseURLMarker))
+        XCTAssertTrue(projected.contains("model = \"\(profile.model)\""))
+        XCTAssertTrue(
+            projected.contains(
+                "openai_base_url = \"\(ProviderCatalog.openCodeGoBridgeBaseURL)\""
+            )
+        )
+        XCTAssertTrue(
+            projected.contains(
+                "\(CodexConfigProjector.preserveProfileIDMarkerPrefix)\(profileID.uuidString)"
+            )
+        )
+        XCTAssertTrue(
+            projected.contains(
+                "\(CodexConfigProjector.preservePresetMarkerPrefix)openCodeGo"
+            )
+        )
+        XCTAssertTrue(projected.contains(CodexConfigProjector.catalogPointerMarker))
+        XCTAssertTrue(projected.contains("model_catalog_json = \"\(CodexModelCatalog.filename)\""))
+        XCTAssertFalse(projected.contains("model_provider ="))
+        XCTAssertFalse(projected.contains(CodexConfigProjector.providersBeginMarker))
+        XCTAssertFalse(projected.contains("[model_providers."))
+        XCTAssertFalse(projected.contains("auth.command"))
+        XCTAssertFalse(projected.contains("command = \"/usr/bin/security\""))
+        XCTAssertFalse(projected.contains("secret"))
+        XCTAssertTrue(projected.contains("approval_policy = \"never\""))
+        XCTAssertTrue(projected.contains("[mcp_servers.example]"))
+    }
+
+    func testPreserveProjectionCanReturnToCustomProviderAndRejectsForeignOpenAIBaseURL() throws {
+        let preserveProfile = makeProfile(
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true
+        )
+        let projected = try CodexConfigProjector().project(
+            original: "approval_policy = \"never\"\n",
+            profile: preserveProfile
+        )
+        let normalProfile = ProviderProfile(
+            id: preserveProfile.id,
+            name: preserveProfile.name,
+            presetID: preserveProfile.presetID,
+            model: preserveProfile.model,
+            preserveSessions: false,
+            createdAt: preserveProfile.createdAt,
+            updatedAt: preserveProfile.updatedAt
+        )
+        let restored = try CodexConfigProjector().project(
+            original: projected,
+            profile: normalProfile
+        )
+
+        XCTAssertFalse(restored.contains(CodexConfigProjector.preserveSessionsMarker))
+        XCTAssertFalse(restored.contains(CodexConfigProjector.openAIBaseURLMarker))
+        XCTAssertFalse(restored.contains("openai_base_url ="))
+        XCTAssertTrue(restored.contains("model_provider = \"\(ProviderCatalog.openCodeGoBridgeProviderID)\""))
+        XCTAssertTrue(restored.contains(CodexConfigProjector.providersBeginMarker))
+        XCTAssertTrue(restored.contains("[model_providers.\(ProviderCatalog.openCodeGoBridgeProviderID)]"))
+        XCTAssertTrue(restored.contains("command = \"/usr/bin/security\""))
+
+        let foreign = """
+        openai_base_url = "https://foreign.example/v1"
+        approval_policy = "never"
+        """
+        XCTAssertThrowsError(
+            try CodexConfigProjector().project(
+                original: foreign,
+                profile: preserveProfile
+            )
+        ) { error in
+            XCTAssertEqual(error as? CodexSwitchError, .foreignOpenAIBaseURL)
+        }
+    }
+
     func testSeparatesThinkTagsAcrossBufferedSSEChunks() throws {
         let upstream = """
         data: {"id":"chatcmpl_think","model":"glm-5.2","choices":[{"index":0,"delta":{"content":"Before <th"},"finish_reason":null}]}
@@ -1316,6 +1583,166 @@ final class CodexCoreTests: XCTestCase {
 
         XCTAssertEqual(responseBodies.count, 2)
         XCTAssertEqual(responseBodies[0], responseBodies[1])
+    }
+
+    func testPreserveResponsesLoopbackUsesSelectedCredentialAndForwardsOnlySafeHeaders() async throws {
+        let upstreamBody = Data(#"{"id":"resp_passthrough","model":"gpt-5.6-luna","output":[]}"#.utf8)
+        let transport = CapturingBridgeTransport(
+            response: OpenCodeGoBridgeTransportResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/json"],
+                body: upstreamBody
+            )
+        )
+        let bridge = OpenCodeGoBridgeManager(port: 0, transport: transport)
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "gpt-5.6-luna",
+            preserveSessions: true
+        )
+        let route = try ProviderCatalog.route(for: profile)
+        bridge.configurePreservingSessions(
+            route: route,
+            credential: Data("selected-responses-key".utf8)
+        )
+        try bridge.ensureRunning()
+        defer { bridge.stop() }
+
+        let port = try XCTUnwrap(bridge.localPort)
+        let requestBody = Data(#"{"model":"gpt-5.6-luna","input":"hello","stream":false}"#.utf8)
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/responses"))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = requestBody
+        request.setValue("Bearer inbound-oauth-must-not-forward", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("zstd", forHTTPHeaderField: "Content-Encoding")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("official-account-metadata", forHTTPHeaderField: "X-Official-Account")
+
+        let (body, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(httpResponse.statusCode, 200)
+        XCTAssertEqual(body, upstreamBody)
+
+        let upstreamRequest = try XCTUnwrap(transport.capturedRequest)
+        XCTAssertEqual(
+            upstreamRequest.url?.absoluteString,
+            "\(ProviderCatalog.openCodeGoOfficialBaseURL)/responses"
+        )
+        XCTAssertEqual(upstreamRequest.httpBody, requestBody)
+        XCTAssertEqual(
+            upstreamRequest.value(forHTTPHeaderField: "Authorization"),
+            "Bearer selected-responses-key"
+        )
+        XCTAssertNotEqual(
+            upstreamRequest.value(forHTTPHeaderField: "Authorization"),
+            "Bearer inbound-oauth-must-not-forward"
+        )
+        XCTAssertNil(upstreamRequest.value(forHTTPHeaderField: "X-Official-Account"))
+        XCTAssertEqual(upstreamRequest.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(upstreamRequest.value(forHTTPHeaderField: "Content-Encoding"), "zstd")
+        XCTAssertEqual(upstreamRequest.value(forHTTPHeaderField: "Accept"), "application/json")
+    }
+
+    func testPreserveChatLoopbackRejectsCompressedBodyBeforeConversion() async throws {
+        let transport = CapturingBridgeTransport(
+            response: OpenCodeGoBridgeTransportResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/json"],
+                body: Data()
+            )
+        )
+        let bridge = OpenCodeGoBridgeManager(port: 0, transport: transport)
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true
+        )
+        let route = try ProviderCatalog.route(for: profile)
+        bridge.configurePreservingSessions(
+            route: route,
+            credential: Data("selected-chat-key".utf8)
+        )
+        try bridge.ensureRunning()
+        defer { bridge.stop() }
+
+        let port = try XCTUnwrap(bridge.localPort)
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/responses"))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = Data("compressed-body-placeholder".utf8)
+        request.setValue("Bearer inbound-oauth", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("zstd", forHTTPHeaderField: "Content-Encoding")
+
+        let (body, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(httpResponse.statusCode, 415)
+        XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("unsupported_content_encoding"))
+        XCTAssertNil(transport.capturedRequest)
+    }
+
+    func testPreserveChatLoopbackUsesSelectedCredentialAndConvertsToUpstreamChat() async throws {
+        let upstreamBody = Data(#"{"id":"chatcmpl_preserve","choices":[{"message":{"role":"assistant","content":"hello from upstream"},"finish_reason":"stop"}]}"#.utf8)
+        let transport = CapturingBridgeTransport(
+            response: OpenCodeGoBridgeTransportResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/json"],
+                body: upstreamBody
+            )
+        )
+        let bridge = OpenCodeGoBridgeManager(port: 0, transport: transport)
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: true
+        )
+        let route = try ProviderCatalog.route(for: profile)
+        bridge.configurePreservingSessions(
+            route: route,
+            credential: Data("selected-chat-key".utf8)
+        )
+        try bridge.ensureRunning()
+        defer { bridge.stop() }
+
+        let port = try XCTUnwrap(bridge.localPort)
+        let requestBody = Data(#"{"model":"glm-5.2","input":[{"role":"user","content":"hello"}]}"#.utf8)
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/responses"))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = requestBody
+        request.setValue("Bearer inbound-oauth-must-not-forward", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("official-account-metadata", forHTTPHeaderField: "X-Official-Account")
+
+        let (body, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(httpResponse.statusCode, 200)
+        let sse = try XCTUnwrap(String(data: body, encoding: .utf8))
+        XCTAssertTrue(sse.contains("hello from upstream"))
+
+        let upstreamRequest = try XCTUnwrap(transport.capturedRequest)
+        XCTAssertEqual(
+            upstreamRequest.url?.absoluteString,
+            "\(ProviderCatalog.openCodeGoOfficialBaseURL)/chat/completions"
+        )
+        XCTAssertEqual(
+            upstreamRequest.value(forHTTPHeaderField: "Authorization"),
+            "Bearer selected-chat-key"
+        )
+        XCTAssertNotEqual(
+            upstreamRequest.value(forHTTPHeaderField: "Authorization"),
+            "Bearer inbound-oauth-must-not-forward"
+        )
+        XCTAssertNil(upstreamRequest.value(forHTTPHeaderField: "X-Official-Account"))
+        let converted = try XCTUnwrap(
+            upstreamRequest.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                as? [String: Any]
+        )
+        XCTAssertEqual(converted["model"] as? String, "glm-5.2")
+        XCTAssertNotNil(converted["messages"] as? [[String: Any]])
     }
 
     func testPrepareForUseStartsOnlyForAnActiveBridgeConfiguration() throws {
@@ -1575,12 +2002,14 @@ final class CodexCoreTests: XCTestCase {
 
     private func makeProfile(
         presetID: ProviderPresetID,
-        model: String? = nil
+        model: String? = nil,
+        preserveSessions: Bool = false
     ) -> ProviderProfile {
         ProviderProfile(
             name: "Test profile",
             presetID: presetID,
             model: model,
+            preserveSessions: preserveSessions,
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
         )
@@ -1633,6 +2062,59 @@ private final class FakeBridgeManager: OpenCodeGoBridgeManaging {
 
     func stop() {
         events.append("stop")
+    }
+}
+
+private final class ConfigurableFakeBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGoBridgeConfiguring {
+    var events: [String] = []
+    var configuredRoute: ProviderRoute?
+    var configuredCredential: Data?
+    var onEnsure: (() throws -> Void)?
+
+    func configureLegacyChatMode() {
+        events.append("configure-legacy")
+    }
+
+    func configurePreservingSessions(route: ProviderRoute, credential: Data) {
+        events.append("configure-preserve")
+        configuredRoute = route
+        configuredCredential = credential
+    }
+
+    func ensureRunning() throws {
+        events.append("ensure")
+        try onEnsure?()
+    }
+
+    func stop() {
+        events.append("stop")
+    }
+}
+
+private final class CapturingBridgeTransport: OpenCodeGoBridgeTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private let response: OpenCodeGoBridgeTransportResponse
+    private var requestStorage: URLRequest?
+
+    init(response: OpenCodeGoBridgeTransportResponse) {
+        self.response = response
+    }
+
+    var capturedRequest: URLRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestStorage
+    }
+
+    func execute(_ request: URLRequest) async throws -> OpenCodeGoBridgeTransportResponse {
+        record(request)
+        return response
+    }
+
+    private func record(_ request: URLRequest) {
+        lock.lock()
+        requestStorage = request
+        lock.unlock()
     }
 }
 

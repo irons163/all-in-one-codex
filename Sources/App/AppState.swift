@@ -99,6 +99,7 @@ final class AppState: ObservableObject {
         var name: String
         var presetKey: String
         var model: String
+        var preserveSessions: Bool
         /// This is write-only from the UI's point of view.
         var apiKey: String
 
@@ -107,12 +108,14 @@ final class AppState: ObservableObject {
             name: String = "",
             presetKey: String = "",
             model: String = "",
+            preserveSessions: Bool = false,
             apiKey: String = ""
         ) {
             self.id = id
             self.name = name
             self.presetKey = presetKey
             self.model = model
+            self.preserveSessions = preserveSessions
             self.apiKey = apiKey
         }
     }
@@ -209,7 +212,7 @@ final class AppState: ObservableObject {
     // MARK: Core dependencies
 
     static let restartRequiredMessage =
-        "設定與 model catalog 已更新；請完全退出並重新啟動 Codex App/CLI，建立新 task。"
+        "設定與 model catalog 已更新；請完全退出並重新啟動 Codex App/CLI。"
 
     private let profileRepository: ProfileRepository
     private let credentialStore: any CredentialStoring
@@ -322,7 +325,8 @@ final class AppState: ObservableObject {
 
     func routePresentation(
         for presetKey: String,
-        model: String
+        model: String,
+        preserveSessions: Bool = false
     ) -> RoutePresentation {
         let fallbackEndpoint = presetOptions.first { $0.id == presetKey }?.endpoint
             ?? Self.fallbackEndpoint(for: presetKey)
@@ -346,10 +350,14 @@ final class AppState: ObservableObject {
                 for: ProviderProfile(
                     name: "Route preview",
                     presetID: presetID,
-                    model: trimmedModel
+                    model: trimmedModel,
+                    preserveSessions: preserveSessions
                 )
             )
-            return makeRoutePresentation(for: route)
+            return makeRoutePresentation(
+                for: route,
+                preserveSessions: preserveSessions
+            )
         } catch let error as ProviderRoutingError {
             return unavailableRoute(
                 endpoint: fallbackEndpoint,
@@ -381,6 +389,7 @@ final class AppState: ObservableObject {
             name: profile.name,
             presetKey: presetKey(for: profile.presetID),
             model: profile.model,
+            preserveSessions: profile.preserveSessions,
             apiKey: ""
         )
         refreshCredentialAvailability(for: profile.id)
@@ -669,7 +678,7 @@ final class AppState: ObservableObject {
             rebuildProfileItems()
             modelCatalogStatus = .restored
             restartRequired = true
-            statusMessage = "已復原上一個 switch；請完全退出並重新啟動 Codex App/CLI，建立新 task。"
+            statusMessage = "已復原上一個 switch；請完全退出並重新啟動 Codex App/CLI。"
 
             if let journalEntry {
                 do {
@@ -813,6 +822,7 @@ final class AppState: ObservableObject {
             name: name,
             presetID: presetID,
             model: model,
+            preserveSessions: draft.preserveSessions,
             createdAt: existing?.createdAt ?? now,
             updatedAt: now
         )
@@ -823,7 +833,8 @@ final class AppState: ObservableObject {
             let presentation = presetPresentation(for: profile.presetID)
             let route = routePresentation(
                 for: presetKey(for: profile.presetID),
-                model: profile.model
+                model: profile.model,
+                preserveSessions: profile.preserveSessions
             )
             return ProfileListItem(
                 id: profile.id,
@@ -844,7 +855,8 @@ final class AppState: ObservableObject {
         let presentation = presetPresentation(for: profile.presetID)
         let route = routePresentation(
             for: presetKey(for: profile.presetID),
-            model: profile.model
+            model: profile.model,
+            preserveSessions: profile.preserveSessions
         )
         var changes = [
             "更新 ~/.codex/config.toml",
@@ -862,7 +874,18 @@ final class AppState: ObservableObject {
         }
         var warnings: [String] = []
 
-        if route.bridgeEnabled {
+        if profile.preserveSessions {
+            changes.append("保留 Codex 內建 openai provider namespace，重啟後可重新開啟既有 sessions")
+            changes.append("所有請求經本機 proxy，並由 Keychain 注入此 profile 的 API key")
+            if let loopbackEndpoint = route.loopbackEndpoint {
+                changes.append("Loopback endpoint：\(loopbackEndpoint)")
+            }
+            if let upstreamEndpoint = route.upstreamEndpoint {
+                changes.append("Upstream endpoint：\(upstreamEndpoint)")
+            }
+            warnings.append("保留模式需要 All-in-One Codex 持續開啟，並在 Apply 後完全重新啟動 Codex。")
+            warnings.append("正在執行中的 task 不會熱切換；請在重啟後重新開啟既有 task。")
+        } else if route.bridgeEnabled {
             let bridgeLabel = route.bridgeStatus == .running
                 ? "執行中"
                 : "Apply 時自動啟動"
@@ -981,7 +1004,26 @@ final class AppState: ObservableObject {
         .sorted { $0.name < $1.name }
     }
 
-    private func makeRoutePresentation(for route: ProviderRoute) -> RoutePresentation {
+    private func makeRoutePresentation(
+        for route: ProviderRoute,
+        preserveSessions: Bool
+    ) -> RoutePresentation {
+        if preserveSessions {
+            let upstreamEndpoint = route.requiresLoopbackBridge
+                ? Self.openCodeGoUpstreamEndpoint
+                : route.baseURL
+            return RoutePresentation(
+                routeName: "Session-preserving local proxy",
+                endpoint: OpenCodeGoBridgeManager.baseURL,
+                explanation: "保留 Codex 內建 openai provider namespace；請求經本機 proxy 從 Keychain 取得 API key，再依 model 透明轉送或轉換。重啟後可重新開啟既有 task，使用期間請保持 All-in-One Codex 開啟。",
+                bridgeEnabled: true,
+                bridgeStatus: bridgeStatus,
+                loopbackEndpoint: OpenCodeGoBridgeManager.baseURL,
+                upstreamEndpoint: upstreamEndpoint,
+                isKnown: true
+            )
+        }
+
         if route.requiresLoopbackBridge {
             let upstreamEndpoint = Self.openCodeGoUpstreamEndpoint
             return RoutePresentation(
@@ -1134,6 +1176,8 @@ final class AppState: ObservableObject {
                 return "Codex model catalog 在套用後已變更，為安全起見無法 Undo。"
             case .foreignModelCatalogPointer:
                 return "現有 Codex 設定指向其他 model catalog；為安全起見未覆寫，請先移除或改回該設定。"
+            case .foreignOpenAIBaseURL:
+                return "現有 Codex 設定已包含非本 App 管理的 openai_base_url；為避免誤送請求，請先移除或改回該設定。"
             case .unsafeBackupPath:
                 return "config backup 路徑不安全，為保護現有設定未覆寫。"
             case .invalidConfigurationBackup:

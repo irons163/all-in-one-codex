@@ -11,6 +11,7 @@ profiles，安全地預覽、套用與復原設定。它也會投影 Codex model
 - OpenCode Go 的 All-in-One model picker，以及 OpenRouter 自訂 model ID
 - 只接受新值的 Keychain `SecureField`
 - Preview、Apply、Undo、Menu Bar quick apply
+- 可選的既有 Codex session 保留模式
 - model catalog 摘要、restart-required 提示與 sanitized error
 
 ## Apply 會更新什麼
@@ -27,10 +28,30 @@ Apply 是一個 configuration + catalog transaction：
 
 4. 若選到 Chat-only model，Apply 會由 All-in-One Codex 自動啟動
    `127.0.0.1:14556` 的 local bridge；不需要另外手動啟動。
+5. 若 profile 開啟「保留既有 Codex sessions」，Apply 會保留內建 `openai`
+   provider namespace，以 `openai_base_url` 將請求導向同一個 local bridge；
+   bridge 再從 Keychain 取得該 profile 的 API key 並轉送到實際 provider。
 
 Apply 成功只代表檔案與 route 已安全寫入，**不代表 Codex Desktop 的
 model picker 一定會立刻顯示 custom model**。App 不會自動 kill Codex，也不會
-熱載入正在執行的 Codex task；請依「實際使用步驟」完全重啟並建立新 task。
+熱載入正在執行的 Codex task；請依「實際使用步驟」完全重啟。保留模式可在
+重啟後重新開啟既有 task，但不會讓執行中的 task 原地熱切換。
+
+## 保留既有 Codex sessions
+
+Codex 會依 active provider identity 區分可見的 task/history。一般模式使用
+All-in-One 的自訂 `model_provider`，因此原本位於內建 `openai` provider 下的
+task 可能在切換後暫時看不到。開啟 profile 的「保留既有 Codex sessions」後：
+
+- active provider 維持 Codex 內建的 `openai` namespace；
+- `openai_base_url` 只導向 `http://127.0.0.1:14556/v1`；
+- local proxy 不會把 Codex 傳入的官方 OAuth bearer 送到第三方 upstream；
+- upstream Authorization 只使用該 profile 在 macOS Keychain 中的 API key；
+- `~/.codex/auth.json`、session JSONL、history 與 state database 都不會被改寫。
+
+此模式對 Responses route 使用透明 proxy，對 Chat-only route 沿用
+Responses ↔ Chat Completions 轉換。All-in-One Codex 必須持續開啟；Apply 後
+仍需完全退出並重啟 Codex，再從既有 task 清單重新開啟 session。
 
 ## Provider routing
 
@@ -103,10 +124,11 @@ identity 決定是否放行 custom models；因此可能出現：
 Desktop 保持有效的官方 ChatGPT/Codex login，再完整退出並重開 Desktop。
 
 All-in-One Codex **不會把第三方 API key 寫入 `~/.codex/auth.json`**。
-API key 由 Keychain 管理，`config.toml` 使用 command-backed authentication；
-bridge 只轉送 Codex 已取得的 bearer credential。這個安全邊界也表示本 app
-不會替 Desktop 偽造或補寫官方 login。上游 gating 仍可能拒絕在沒有官方登入
-時顯示 custom models。
+API key 由 Keychain 管理：一般模式由 `config.toml` 的 command-backed
+authentication 交給 Codex 取得；session 保留模式則由 local proxy 直接從
+Keychain 取得，且不會把傳入的官方 OAuth bearer 送往第三方。這個安全邊界也
+表示本 app 不會替 Desktop 偽造或補寫官方 login。上游 gating 仍可能拒絕在
+沒有官方登入時顯示 custom models。
 
 ## 實際使用步驟
 
@@ -114,14 +136,16 @@ bridge 只轉送 Codex 已取得的 bearer credential。這個安全邊界也表
    key；既有 key 不會讀回或顯示。
 2. 確認 model picker 使用 All-in-One 的 model source list。DeepSeek 位於
    OpenCode Go 清單；可選 `deepseek-v4-flash` 或 `deepseek-v4-pro`。
-3. 可先按 Preview 檢查 route 與 catalog count；Preview 不會修改檔案，也
-   不會顯示 credential。按 Apply 後保持 All-in-One Codex 開啟；需要 bridge
-   時它會自動啟動。
+3. 若要在切換後重新開啟原有 task，開啟「保留既有 Codex sessions」。可先按
+   Preview 檢查 route 與 catalog count；Preview 不會修改檔案，也不會顯示
+   credential。按 Apply 後保持 All-in-One Codex 開啟；需要 bridge 時它會
+   自動啟動。
 4. **完全退出 Codex/ChatGPT Desktop**，再重新開啟 Codex；All-in-One Codex
    不要在 Chat-only route 使用期間關閉。
-5. 建立新 task。若 Desktop 要顯示 DeepSeek，請同時確認上一步所述的官方
-   Codex login 仍有效；「Apply 成功」與「Desktop picker 可見」必須分開驗證。
-6. 在 Codex CLI 的新 task 中輸入 `/model` 查看 catalog model，輸入
+5. 保留模式可重新開啟既有 task；一般模式則建立新 task。若 Desktop 要顯示
+   DeepSeek，請同時確認上一步所述的官方 Codex login 仍有效；「Apply 成功」
+   與「Desktop picker 可見」必須分開驗證。
+6. 在 Codex CLI task 中輸入 `/model` 查看 catalog model，輸入
    `/status` 查看目前 route、provider 或 session 狀態。CLI 正常而 Desktop
    不顯示時，通常就是 Desktop login gating。
 
@@ -136,11 +160,10 @@ bridge 只轉送 Codex 已取得的 bearer credential。這個安全邊界也表
 - Restore 不會遷移或重寫 Codex 的 sessions、history、auth 或 state database，
   也不會複製或刪除約 20GB 的 session data。完成 Apply、Undo 或 Restore 後，
   都必須完全退出並重新啟動 Codex。
-- 原始 config restore 後，若 config provider bucket 已返回，Codex Desktop
-  的 sessions 可能會在重啟後重新出現；App 不會自動改寫任何 history metadata。
-  history bucket restoration 仍是未來另行 opt-in 的功能。
+- 開啟 profile 的 session 保留模式可維持內建 `openai` provider namespace；
+  App 不會自動改寫任何 history metadata，也不會遷移 session data。
 - config restore 已由 App 的 backup inventory 與安全確認流程提供，不再需要
-  手動輸入指令；history restoration 仍維持獨立的未來 opt-in 範圍。
+  手動輸入指令。
 
 ## 安全模型
 
@@ -148,13 +171,15 @@ bridge 只轉送 Codex 已取得的 bearer credential。這個安全邊界也表
   不會寫入 profile JSON、README、log、catalog 或 UI state。
 - 編輯既有 profile 時，API key 欄位永遠是空白；欄位只接受新的 key。
 - 新 key 成功儲存後立即清空 `SecureField`，App 不會讀回或顯示既有 key。
-- `CodexClientAdapter` 在 `config.toml` 產生 `auth.command`，由 Codex 從
-  macOS Keychain 取出 credential；model catalog 只包含 model descriptors。
+- 一般模式由 `CodexClientAdapter` 在 `config.toml` 產生 `auth.command`，讓
+  Codex 從 macOS Keychain 取出 credential；session 保留模式則由 loopback
+  proxy 依 active profile 從 Keychain 取出。model catalog 只包含 descriptors。
 - bridge 僅監聽 `127.0.0.1:14556`，不接受 LAN 或公開網路連線。credential
-  不會被 bridge 寫入檔案、保存或寫入 log；Preview、warning、Apply、Undo
+  只在 active route 的記憶體中使用，不會被 bridge 寫入檔案、永久保存或寫入 log；Preview、warning、Apply、Undo
   的 UI 訊息也不顯示 key。
-- 設定切換不修改 `~/.codex/auth.json`。Chat-only route 的上游轉送是明確
-  的 local bridge network path，不是假設 app 完全不會發生 network call。
+- 設定切換不修改 `~/.codex/auth.json`。Chat-only route 與 session 保留模式的
+  上游轉送是明確的 local bridge network path，不是假設 app 完全不會發生
+  network call。
 
 ## Build
 

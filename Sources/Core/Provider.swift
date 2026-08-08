@@ -37,6 +37,14 @@ public struct ProviderRoute: Equatable, Sendable {
     public let baseURL: String
     public let wireAPI: ProviderWireAPI
     public let requiresLoopbackBridge: Bool
+    /// The endpoint the loopback bridge contacts when session preservation is
+    /// enabled. For direct Responses providers this is identical to `baseURL`;
+    /// Chat Completions profiles keep their Codex-facing bridge URL separate
+    /// from their upstream endpoint.
+    let upstreamBaseURL: String
+    /// The wire contract used by `upstreamBaseURL`. This can differ from the
+    /// Codex-facing `wireAPI` for a Chat Completions bridge route.
+    let upstreamWireAPI: ProviderWireAPI
 
     public init(
         model: String,
@@ -45,11 +53,33 @@ public struct ProviderRoute: Equatable, Sendable {
         wireAPI: ProviderWireAPI,
         requiresLoopbackBridge: Bool
     ) {
+        self.init(
+            model: model,
+            providerID: providerID,
+            baseURL: baseURL,
+            wireAPI: wireAPI,
+            requiresLoopbackBridge: requiresLoopbackBridge,
+            upstreamBaseURL: baseURL,
+            upstreamWireAPI: wireAPI
+        )
+    }
+
+    init(
+        model: String,
+        providerID: String,
+        baseURL: String,
+        wireAPI: ProviderWireAPI,
+        requiresLoopbackBridge: Bool,
+        upstreamBaseURL: String,
+        upstreamWireAPI: ProviderWireAPI
+    ) {
         self.model = model
         self.providerID = providerID
         self.baseURL = baseURL
         self.wireAPI = wireAPI
         self.requiresLoopbackBridge = requiresLoopbackBridge
+        self.upstreamBaseURL = upstreamBaseURL
+        self.upstreamWireAPI = upstreamWireAPI
     }
 }
 
@@ -221,7 +251,9 @@ public enum ProviderCatalog {
                     providerID: openCodeGoBridgeProviderID,
                     baseURL: openCodeGoBridgeBaseURL,
                     wireAPI: .responses,
-                    requiresLoopbackBridge: true
+                    requiresLoopbackBridge: true,
+                    upstreamBaseURL: openCodeGoOfficialBaseURL,
+                    upstreamWireAPI: .chatCompletions
                 )
             case .anthropicMessages:
                 throw ProviderRoutingError.unsupportedOpenCodeGoWireAPI(.anthropicMessages)
@@ -236,6 +268,10 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
     public var name: String
     public var presetID: ProviderPresetID
     public var model: String
+    /// Opt-in only. When enabled the app leaves Codex on its OpenAI provider
+    /// identity and routes requests through the authenticated local bridge so
+    /// existing Codex session history can remain associated with that identity.
+    public var preserveSessions: Bool
     public let createdAt: Date
     public var updatedAt: Date
 
@@ -244,6 +280,7 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
         name: String,
         presetID: ProviderPresetID,
         model: String? = nil,
+        preserveSessions: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -251,7 +288,46 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
         self.name = name
         self.presetID = presetID
         self.model = model ?? ProviderCatalog.preset(for: presetID)?.defaultModel ?? ""
+        self.preserveSessions = preserveSessions
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case presetID
+        case model
+        case preserveSessions
+        case createdAt
+        case updatedAt
+    }
+
+    /// Profiles persisted before session preservation existed deliberately
+    /// decode as opt-out, rather than failing migration or changing their
+    /// routing behavior.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        presetID = try container.decode(ProviderPresetID.self, forKey: .presetID)
+        model = try container.decode(String.self, forKey: .model)
+        preserveSessions = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .preserveSessions
+        ) ?? false
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(presetID, forKey: .presetID)
+        try container.encode(model, forKey: .model)
+        try container.encode(preserveSessions, forKey: .preserveSessions)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }

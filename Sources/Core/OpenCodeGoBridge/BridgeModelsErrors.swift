@@ -19,6 +19,18 @@ public extension OpenCodeGoBridgeManaging {
     }
 }
 
+/// Internal configuration boundary used by `CodexClientAdapter`. Keeping the
+/// credential-bearing mode off the public lifecycle protocol preserves the
+/// lightweight test/alternate-manager contract while ensuring only the
+/// loopback manager can retain the in-memory Keychain value.
+protocol OpenCodeGoBridgeConfiguring: AnyObject {
+    func configureLegacyChatMode()
+    func configurePreservingSessions(
+        route: ProviderRoute,
+        credential: Data
+    )
+}
+
 /// Errors are deliberately generic so neither bearer credentials nor upstream
 /// response bodies can reach configuration, logs, or UI error strings.
 public enum OpenCodeGoBridgeError: LocalizedError, Equatable, Sendable {
@@ -31,6 +43,7 @@ public enum OpenCodeGoBridgeError: LocalizedError, Equatable, Sendable {
     case invalidRequest
     case unsupportedModel
     case missingAuthorization
+    case missingProviderCredential
     case upstreamUnavailable
     case upstreamRejected
     case invalidUpstreamResponse
@@ -55,6 +68,8 @@ public enum OpenCodeGoBridgeError: LocalizedError, Equatable, Sendable {
             return "The bridge supports only known OpenCode Go Chat Completions models."
         case .missingAuthorization:
             return "The bridge request did not include provider authorization."
+        case .missingProviderCredential:
+            return "The bridge has no active provider credential."
         case .upstreamUnavailable:
             return "OpenCode Go is temporarily unavailable."
         case .upstreamRejected:
@@ -181,6 +196,12 @@ public enum OpenCodeGoBridgeErrorNormalizer {
                 statusCode: 401,
                 code: "missing_authorization",
                 message: "The bridge request did not include provider authorization."
+            )
+        case .missingProviderCredential:
+            return OpenCodeGoNormalizedError(
+                statusCode: 503,
+                code: "missing_provider_credential",
+                message: "The bridge has no active provider credential."
             )
         case .portInUse:
             return OpenCodeGoNormalizedError(

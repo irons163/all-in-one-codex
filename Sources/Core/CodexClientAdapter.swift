@@ -296,13 +296,28 @@ public struct CodexClientAdapter: ClientAdapter {
     }
 
     /// Starts the loopback bridge only when the active existing configuration
-    /// points Codex at the bridge provider. This prevents an OpenRouter-only
-    /// installation from claiming the bridge port during launch.
+    /// points Codex at the legacy bridge provider or contains this app's
+    /// session-preservation markers. A preservation configuration is rebuilt
+    /// from non-secret TOML comments and retrieves its credential afresh from
+    /// Keychain on each app launch.
     public func prepareForUse() throws {
         let snapshot = try readConfiguration()
+        if let preservedConfiguration = Self.preservedSessionBridgeConfiguration(
+            in: snapshot.text
+        ) {
+            let credential = try credential(for: preservedConfiguration.profileID)
+            try configureBridgeForPreservingSessions(
+                route: preservedConfiguration.route,
+                credential: credential
+            )
+            try bridgeManager.ensureRunning()
+            return
+        }
+
         guard Self.activeModelProvider(in: snapshot.text) == ProviderCatalog.openCodeGoBridgeProviderID else {
             return
         }
+        configureLegacyBridgeMode()
         try bridgeManager.ensureRunning()
     }
 
@@ -320,7 +335,7 @@ public struct CodexClientAdapter: ClientAdapter {
     }
 
     public func apply(profile: ProviderProfile) throws -> SwitchReceipt {
-        try requireCredential(for: profile.id)
+        let credential = try credential(for: profile.id)
         let route = try ProviderCatalog.route(for: profile)
         let configurationSnapshot = try readConfiguration()
         let catalog = try CodexModelCatalog.make(for: profile)
@@ -347,7 +362,19 @@ public struct CodexClientAdapter: ClientAdapter {
             timestamp: timestamp
         )
 
-        if route.requiresLoopbackBridge {
+        if profile.preserveSessions {
+            // The listener must be configured and available before Codex is
+            // pointed at its fixed OpenAI base URL. The Keychain value stays
+            // in bridge memory only; it is never rendered into TOML.
+            try configureBridgeForPreservingSessions(route: route, credential: credential)
+            try bridgeManager.ensureRunning()
+        } else {
+            // Clear any earlier session-preservation credential before a
+            // normal custom-provider switch. No listener is started for
+            // direct Responses routes, preserving the existing behavior.
+            configureLegacyBridgeMode()
+        }
+        if !profile.preserveSessions, route.requiresLoopbackBridge {
             // The listener must be available before Codex is pointed at it.
             try bridgeManager.ensureRunning()
         }
@@ -438,17 +465,35 @@ public struct CodexClientAdapter: ClientAdapter {
         )
     }
 
-    private func requireCredential(for profileID: UUID) throws {
+    private func credential(for profileID: UUID) throws -> Data {
         do {
             let credential = try credentialStore.read(for: profileID)
             guard !credential.isEmpty else {
                 throw CodexSwitchError.missingCredential
             }
+            return credential
         } catch is CodexSwitchError {
             throw CodexSwitchError.missingCredential
         } catch {
             throw CodexSwitchError.missingCredential
         }
+    }
+
+    private func configureLegacyBridgeMode() {
+        (bridgeManager as? any OpenCodeGoBridgeConfiguring)?
+            .configureLegacyChatMode()
+    }
+
+    private func configureBridgeForPreservingSessions(
+        route: ProviderRoute,
+        credential: Data
+    ) throws {
+        guard let bridge = bridgeManager as? any OpenCodeGoBridgeConfiguring else {
+            // A preserve projection without a credential-injecting bridge
+            // would direct Codex at loopback and silently break requests.
+            throw OpenCodeGoBridgeError.unableToStart
+        }
+        bridge.configurePreservingSessions(route: route, credential: credential)
     }
 
     private func readConfiguration() throws -> ConfigurationSnapshot {
@@ -910,6 +955,153 @@ public struct CodexClientAdapter: ClientAdapter {
         return nil
     }
 
+    /// Reconstructs only the exact non-secret preservation marker shape
+    /// emitted by `CodexConfigProjector`. Invalid or user-authored marker
+    /// fragments are ignored rather than guessed, so launch preparation never
+    /// sends a Keychain credential to an unverified route.
+    private static func preservedSessionBridgeConfiguration(
+        in configuration: String
+    ) -> PreservedSessionBridgeConfiguration? {
+        let lines = configuration
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { rawLine -> String in
+                var line = String(rawLine)
+                if line.last == "\r" {
+                    line.removeLast()
+                }
+                return line
+            }
+
+        var activeBeginIndices: [Int] = []
+        var activeEndIndices: [Int] = []
+        var firstTableIndex: Int?
+        var multilineDelimiter: String?
+
+        for index in lines.indices {
+            let line = lines[index]
+            if let activeDelimiter = multilineDelimiter {
+                if line.contains(activeDelimiter) {
+                    multilineDelimiter = nil
+                }
+                continue
+            }
+            if let delimiter = multilineDelimiterOpened(in: line) {
+                multilineDelimiter = delimiter
+                continue
+            }
+
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == CodexConfigProjector.activeBeginMarker {
+                activeBeginIndices.append(index)
+                continue
+            }
+            if trimmed == CodexConfigProjector.activeEndMarker {
+                activeEndIndices.append(index)
+                continue
+            }
+            if isTomlTableHeader(codeBeforeComment(in: line).trimmingCharacters(in: .whitespaces)) {
+                firstTableIndex = firstTableIndex ?? index
+            }
+        }
+
+        guard
+            activeBeginIndices.count == 1,
+            activeEndIndices.count == 1,
+            let activeBegin = activeBeginIndices.first,
+            let activeEnd = activeEndIndices.first,
+            activeBegin < activeEnd,
+            firstTableIndex.map({ activeEnd < $0 }) ?? true
+        else {
+            return nil
+        }
+
+        let activeLines = Array(lines[activeBegin...activeEnd])
+        guard
+            activeLines.count(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == CodexConfigProjector.preserveSessionsMarker
+            }) == 1,
+            activeLines.count(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == CodexConfigProjector.openAIBaseURLMarker
+            }) == 1,
+            let profileMarker = markerValue(
+                withPrefix: CodexConfigProjector.preserveProfileIDMarkerPrefix,
+                in: activeLines
+            ),
+            let profileID = UUID(uuidString: profileMarker),
+            let presetMarker = markerValue(
+                withPrefix: CodexConfigProjector.preservePresetMarkerPrefix,
+                in: activeLines
+            ),
+            let presetID = ProviderPresetID(rawValue: presetMarker),
+            let model = stringAssignment(named: "model", in: activeLines),
+            !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            stringAssignment(named: "model_provider", in: activeLines) == nil,
+            stringAssignment(named: "openai_base_url", in: activeLines)
+                == ProviderCatalog.openCodeGoBridgeBaseURL
+        else {
+            return nil
+        }
+
+        let profile = ProviderProfile(
+            id: profileID,
+            name: "",
+            presetID: presetID,
+            model: model,
+            preserveSessions: true,
+            createdAt: .distantPast,
+            updatedAt: .distantPast
+        )
+        guard let route = try? ProviderCatalog.route(for: profile) else {
+            return nil
+        }
+        return PreservedSessionBridgeConfiguration(profileID: profileID, route: route)
+    }
+
+    private static func markerValue(withPrefix prefix: String, in lines: [String]) -> String? {
+        let values = lines.compactMap { line -> String? in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix(prefix) else {
+                return nil
+            }
+            return String(trimmed.dropFirst(prefix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard values.count == 1, let value = values.first, !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private static func stringAssignment(named expectedKey: String, in lines: [String]) -> String? {
+        var value: String?
+        for line in lines {
+            let code = codeBeforeComment(in: line).trimmingCharacters(in: .whitespaces)
+            guard
+                !code.isEmpty,
+                let equalsIndex = code.firstIndex(of: "=")
+            else {
+                continue
+            }
+            let rawKey = code[..<equalsIndex].trimmingCharacters(in: .whitespaces)
+            let key = rawKey.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            guard key == expectedKey else {
+                continue
+            }
+            guard value == nil else {
+                return nil
+            }
+            let rawValue = code[code.index(after: equalsIndex)...]
+                .trimmingCharacters(in: .whitespaces)
+            guard let decoded = tomlStringValue(rawValue) else {
+                return nil
+            }
+            value = decoded
+        }
+        return value
+    }
+
     private static func multilineDelimiterOpened(in line: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard
@@ -994,6 +1186,11 @@ private struct ConfigurationSnapshot {
     var fileSnapshot: FileSnapshot {
         FileSnapshot(data: data, existed: existed)
     }
+}
+
+private struct PreservedSessionBridgeConfiguration {
+    let profileID: UUID
+    let route: ProviderRoute
 }
 
 private struct FileSnapshot {

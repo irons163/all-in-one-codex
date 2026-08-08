@@ -121,6 +121,26 @@ struct ProfileEditorView: View {
                 }
             }
 
+            Section("Session compatibility") {
+                Toggle("保留既有 Codex sessions", isOn: $draft.preserveSessions)
+
+                Text(
+                    "保留 Codex 內建 openai provider namespace，讓既有 task 在完全重啟 Codex 後仍可見並重新開啟。"
+                    + "所有請求會經本機 proxy，API key 仍只由 Keychain 提供。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                if draft.preserveSessions {
+                    Label(
+                        "使用期間請保持 All-in-One Codex 開啟；正在執行中的 task 不會熱切換。",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
+            }
+
             Section("Codex model catalog") {
                 if let modelCatalogCount {
                     Label(
@@ -147,7 +167,7 @@ struct ProfileEditorView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                Text("Apply 後 Codex App/CLI 不會熱載入 catalog；請完全退出並重新啟動，再建立新 task。")
+                Text("Apply 後 Codex App/CLI 不會熱載入 catalog；請完全退出並重新啟動。保留模式可再開啟既有 task。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -263,7 +283,8 @@ struct ProfileEditorView: View {
     private var route: AppState.RoutePresentation {
         appState.routePresentation(
             for: draft.presetKey,
-            model: draft.model
+            model: draft.model,
+            preserveSessions: draft.preserveSessions
         )
     }
 

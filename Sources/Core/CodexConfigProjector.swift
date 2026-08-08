@@ -16,6 +16,7 @@ public enum CodexSwitchError: LocalizedError, Equatable, Sendable {
     case unsafeBackupPath
     case invalidConfigurationBackup
     case configurationBackupTooLarge
+    case foreignOpenAIBaseURL
 
     public var errorDescription: String? {
         switch self {
@@ -47,6 +48,8 @@ public enum CodexSwitchError: LocalizedError, Equatable, Sendable {
             return "The selected configuration backup is not readable TOML."
         case .configurationBackupTooLarge:
             return "The selected configuration backup exceeds the supported size limit."
+        case .foreignOpenAIBaseURL:
+            return "The Codex configuration already has an OpenAI base URL that is not managed by this app."
         }
     }
 }
@@ -69,6 +72,12 @@ public struct CodexConfigProjector: Sendable {
     public static let activeBeginMarker = "# BEGIN ALL-IN-ONE-CODEX ACTIVE"
     public static let activeEndMarker = "# END ALL-IN-ONE-CODEX ACTIVE"
     public static let catalogPointerMarker = "# ALL-IN-ONE-CODEX MODEL CATALOG"
+    /// Marks an active block that intentionally keeps Codex on its default
+    /// OpenAI provider identity while routing through the local bridge.
+    public static let preserveSessionsMarker = "# ALL-IN-ONE-CODEX PRESERVE SESSIONS"
+    public static let openAIBaseURLMarker = "# ALL-IN-ONE-CODEX OPENAI BASE URL"
+    public static let preserveProfileIDMarkerPrefix = "# ALL-IN-ONE-CODEX PRESERVE PROFILE ID: "
+    public static let preservePresetMarkerPrefix = "# ALL-IN-ONE-CODEX PRESERVE PRESET: "
     public static let providersBeginMarker = "# BEGIN ALL-IN-ONE-CODEX PROVIDERS"
     public static let providersEndMarker = "# END ALL-IN-ONE-CODEX PROVIDERS"
 
@@ -106,6 +115,12 @@ public struct CodexConfigProjector: Sendable {
             in: originalLines,
             activeRange: activeRange
         )
+        if profile.preserveSessions {
+            try Self.validateOpenAIBaseURL(
+                in: originalLines,
+                activeRange: activeRange
+            )
+        }
 
         var indicesToRemove = Set<Int>()
         if let activeRange {
@@ -130,10 +145,12 @@ public struct CodexConfigProjector: Sendable {
             lines.append(contentsOf: activeBlock)
         }
 
-        if !lines.isEmpty, lines.last?.isEmpty == false {
-            lines.append("")
+        if !profile.preserveSessions {
+            if !lines.isEmpty, lines.last?.isEmpty == false {
+                lines.append("")
+            }
+            lines.append(contentsOf: Self.providersBlock(profileID: profile.id))
         }
-        lines.append(contentsOf: Self.providersBlock(profileID: profile.id))
 
         return lines.joined(separator: lineEnding) + lineEnding
     }
@@ -331,14 +348,53 @@ public struct CodexConfigProjector: Sendable {
     }
 
     private static func activeBlock(profile: ProviderProfile, route: ProviderRoute) -> [String] {
-        [
+        var lines = [
             activeBeginMarker,
-            "model = \(tomlString(profile.model))",
-            "model_provider = \(tomlString(route.providerID))",
-            catalogPointerMarker,
-            "model_catalog_json = \(tomlString(CodexModelCatalog.filename))",
-            activeEndMarker
+            "model = \(tomlString(profile.model))"
         ]
+
+        if profile.preserveSessions {
+            // Comments, rather than unknown TOML keys, keep the marker data
+            // invisible to Codex while allowing launch preparation to rebuild
+            // the selected non-secret route after a full restart.
+            lines.append(preserveSessionsMarker)
+            lines.append(openAIBaseURLMarker)
+            lines.append("openai_base_url = \(tomlString(ProviderCatalog.openCodeGoBridgeBaseURL))")
+            lines.append("\(preserveProfileIDMarkerPrefix)\(profile.id.uuidString)")
+            lines.append("\(preservePresetMarkerPrefix)\(profile.presetID.rawValue)")
+        } else {
+            lines.append("model_provider = \(tomlString(route.providerID))")
+        }
+
+        lines.append(catalogPointerMarker)
+        lines.append("model_catalog_json = \(tomlString(CodexModelCatalog.filename))")
+        lines.append(activeEndMarker)
+        return lines
+    }
+
+    /// A session-preserving projection must own the only top-level
+    /// `openai_base_url`; silently overwriting a user-managed endpoint would
+    /// be both surprising and potentially route Codex traffic incorrectly.
+    private static func validateOpenAIBaseURL(
+        in lines: [String],
+        activeRange: ClosedRange<Int>?
+    ) throws {
+        let assignments = topLevelStringAssignments(in: lines).filter {
+            $0.key == "openai_base_url"
+        }
+        guard !assignments.isEmpty else {
+            return
+        }
+        guard
+            assignments.count == 1,
+            let activeRange,
+            activeRange.contains(assignments[0].index),
+            lines[activeRange].contains(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines) == openAIBaseURLMarker
+            })
+        else {
+            throw CodexSwitchError.foreignOpenAIBaseURL
+        }
     }
 
     /// Claims only the bare, fixed catalog filename emitted by this projector.
