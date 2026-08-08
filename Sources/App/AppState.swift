@@ -197,11 +197,14 @@ final class AppState: ObservableObject {
     @Published private(set) var bridgeStatus: OpenCodeGoBridgeStatus = .stopped
     @Published private(set) var restartRequired = false
     @Published private(set) var modelCatalogStatus = ModelCatalogStatus.pending
+    @Published private(set) var restoreBackups: [CodexConfigurationBackup] = []
+    @Published private(set) var receiptJournalEntries: [SwitchReceiptJournalEntry] = []
     @Published var errorMessage: String?
     @Published var selectedProfileID: UUID?
     @Published var editorDraft = ProfileDraft()
     @Published private(set) var isCreatingProfile = false
     @Published var isShowingNewProfile = false
+    @Published var isShowingRestore = false
 
     // MARK: Core dependencies
 
@@ -211,6 +214,7 @@ final class AppState: ObservableObject {
     private let profileRepository: ProfileRepository
     private let credentialStore: any CredentialStoring
     private let clientAdapter: any ClientAdapter
+    private let receiptRepository: SwitchReceiptRepository
     private var coreProfiles: [ProviderProfile] = []
     private var credentialAvailability: [UUID: Bool] = [:]
     private var lastReceipt: SwitchReceipt?
@@ -219,10 +223,12 @@ final class AppState: ObservableObject {
     init(
         profileRepository: ProfileRepository = ProfileRepository(),
         credentialStore: any CredentialStoring = KeychainCredentialStore(),
-        clientAdapter: (any ClientAdapter)? = nil
+        clientAdapter: (any ClientAdapter)? = nil,
+        receiptRepository: SwitchReceiptRepository = SwitchReceiptRepository()
     ) {
         self.profileRepository = profileRepository
         self.credentialStore = credentialStore
+        self.receiptRepository = receiptRepository
         self.clientAdapter = clientAdapter
             ?? CodexClientAdapter(credentialStore: credentialStore)
         self.presetOptions = Self.buildPresetOptions()
@@ -237,6 +243,14 @@ final class AppState: ObservableObject {
     var selectedProfileItem: ProfileListItem? {
         guard let selectedProfileID else { return nil }
         return profileItems.first { $0.id == selectedProfileID }
+    }
+
+    var canUndoLastSwitch: Bool {
+        lastReceipt != nil || !receiptJournalEntries.isEmpty
+    }
+
+    var hasPersistentUndo: Bool {
+        !receiptJournalEntries.isEmpty
     }
 
     var editorCredentialStatus: CredentialStatus {
@@ -390,6 +404,18 @@ final class AppState: ObservableObject {
         }
     }
 
+    func beginRestore() {
+        guard !isBusy else { return }
+        isShowingRestore = true
+        Task { [weak self] in
+            await self?.refreshRestoreData()
+        }
+    }
+
+    func cancelRestore() {
+        isShowingRestore = false
+    }
+
     // MARK: Persistence
 
     func loadProfiles() async {
@@ -438,6 +464,40 @@ final class AppState: ObservableObject {
                 failureMessage("載入 profiles", error: error)
             ]
             errorMessage = failures.compactMap { $0 }.joined(separator: "\n")
+        }
+
+        if let restoreError = await loadRestoreData() {
+            let message = failureMessage("載入 config backups", error: restoreError)
+            if let existingMessage = errorMessage, !existingMessage.isEmpty {
+                errorMessage = "\(existingMessage)\n\(message)"
+            } else {
+                errorMessage = message
+            }
+        }
+    }
+
+    func refreshRestoreData() async {
+        if let restoreError = await loadRestoreData() {
+            fail("載入 config backups", error: restoreError)
+        }
+    }
+
+    private func loadRestoreData() async -> Error? {
+        receiptJournalEntries = await receiptRepository.load()
+
+        guard let codexAdapter else {
+            // Injected fakes and other ClientAdapter implementations do not
+            // expose Codex backup inventory. Keep restore safely empty.
+            restoreBackups = []
+            return nil
+        }
+
+        do {
+            restoreBackups = try codexAdapter.listConfigurationBackups()
+            return nil
+        } catch {
+            restoreBackups = []
+            return error
         }
     }
 
@@ -546,8 +606,53 @@ final class AppState: ObservableObject {
         await applyProfile(profileID: profileID)
     }
 
+    func restore(_ backup: CodexConfigurationBackup) async {
+        guard !isBusy else { return }
+        guard let codexAdapter else {
+            fail("Restore Backup", error: AppStateError.restoreUnavailable)
+            return
+        }
+
+        isBusy = true
+        defer { isBusy = false }
+
+        do {
+            let receipt = try codexAdapter.restoreConfigurationBackup(backup)
+            lastReceipt = receipt
+            activeProfileID = nil
+            modelCatalogStatus = .restored
+            restartRequired = true
+            rebuildProfileItems()
+            statusMessage = Self.restartRequiredMessage
+
+            await persistReceipt(
+                receipt,
+                profileName: "Config backup restore",
+                model: nil,
+                providerDisplayName: nil
+            )
+            await refreshRestoreData()
+            isShowingRestore = false
+        } catch {
+            fail("Restore Backup", error: error)
+        }
+    }
+
     func undoLastSwitch() async {
-        guard let lastReceipt else {
+        guard !isBusy else { return }
+
+        let persistedEntries = await receiptRepository.load()
+        receiptJournalEntries = persistedEntries
+
+        let receipt: SwitchReceipt
+        let journalEntry: SwitchReceiptJournalEntry?
+        if let lastReceipt {
+            receipt = lastReceipt
+            journalEntry = persistedEntries.first { $0.receipt == lastReceipt }
+        } else if let newestEntry = persistedEntries.first {
+            receipt = newestEntry.receipt
+            journalEntry = newestEntry
+        } else {
             fail("Undo")
             return
         }
@@ -558,13 +663,23 @@ final class AppState: ObservableObject {
         do {
             // Core integration point: adapt only this call if the final Core
             // method uses an unlabeled receipt argument.
-            try clientAdapter.undo(lastReceipt)
+            try clientAdapter.undo(receipt)
             self.lastReceipt = nil
             activeProfileID = nil
             rebuildProfileItems()
             modelCatalogStatus = .restored
             restartRequired = true
             statusMessage = "已復原上一個 switch；請完全退出並重新啟動 Codex App/CLI，建立新 task。"
+
+            if let journalEntry {
+                do {
+                    try await receiptRepository.delete(journalEntry)
+                } catch {
+                    statusMessage =
+                        "設定已復原，但 persistent Undo journal 無法更新；目前設定交易仍已完成。"
+                }
+            }
+            await refreshRestoreData()
         } catch {
             fail("Undo", error: error)
         }
@@ -609,9 +724,44 @@ final class AppState: ObservableObject {
             restartRequired = true
             rebuildProfileItems()
             statusMessage = Self.restartRequiredMessage
+            await persistReceipt(receipt, profile: profile)
+            await refreshRestoreData()
         } catch {
             fail("套用 profile", error: error)
         }
+    }
+
+    private func persistReceipt(_ receipt: SwitchReceipt, profile: ProviderProfile) async {
+        do {
+            try await receiptRepository.persist(receipt: receipt, profile: profile)
+        } catch {
+            statusMessage =
+                "設定已套用，但 persistent Undo journal 無法寫入；本次仍可在目前執行期間 Undo。"
+        }
+    }
+
+    private func persistReceipt(
+        _ receipt: SwitchReceipt,
+        profileName: String?,
+        model: String?,
+        providerDisplayName: String?
+    ) async {
+        do {
+            try await receiptRepository.save(
+                receipt: receipt,
+                profileName: profileName,
+                model: model,
+                providerDisplayName: providerDisplayName,
+                createdAt: receipt.timestamp
+            )
+        } catch {
+            statusMessage =
+                "設定已完成，但 persistent Undo journal 無法寫入；本次仍可在目前執行期間 Undo。"
+        }
+    }
+
+    private var codexAdapter: CodexClientAdapter? {
+        clientAdapter as? CodexClientAdapter
     }
 
     private func ensureCredentialForApply(
@@ -962,12 +1112,43 @@ final class AppState: ObservableObject {
 
         if let switchError = error as? CodexSwitchError {
             switch switchError {
+            case .invalidProfile:
+                return "選取的 profile 不完整，未修改 Codex 設定。"
+            case .malformedManagedMarkers:
+                return "Codex 設定的 managed 區塊不完整，為安全起見未覆寫。"
+            case .misplacedActiveMarker:
+                return "Codex 設定的 managed active 區塊位置不安全，未覆寫。"
+            case .missingCredential:
+                return "尚未找到此 profile 的 API key，請先在 Credentials 設定。"
+            case .unreadableConfiguration:
+                return "Codex 設定無法安全讀取，未覆寫現有檔案。"
+            case .unableToWriteConfiguration:
+                return "Codex 設定無法安全寫入，可能已回復原狀。"
+            case .backupUnavailable:
+                return "找不到可用的 config backup，請重新整理清單。"
+            case .backupIntegrityConflict:
+                return "config backup 與記錄狀態不一致，為安全起見未復原。"
+            case .configurationChanged:
+                return "Codex 設定在交易後已變更，為安全起見無法 Undo。"
             case .modelCatalogChanged:
                 return "Codex model catalog 在套用後已變更，為安全起見無法 Undo。"
             case .foreignModelCatalogPointer:
                 return "現有 Codex 設定指向其他 model catalog；為安全起見未覆寫，請先移除或改回該設定。"
-            default:
-                return nil
+            case .unsafeBackupPath:
+                return "config backup 路徑不安全，為保護現有設定未覆寫。"
+            case .invalidConfigurationBackup:
+                return "選取的 config backup 不是可讀的 TOML，未覆寫現有設定。"
+            case .configurationBackupTooLarge:
+                return "選取的 config backup 超過安全大小上限，未覆寫現有設定。"
+            }
+        }
+
+        if let repositoryError = error as? SwitchReceiptRepositoryError {
+            switch repositoryError {
+            case .unableToWriteJournal:
+                return "persistent Undo journal 無法寫入；設定交易本身仍可安全完成。"
+            case .unableToDeleteJournal:
+                return "persistent Undo journal 無法更新。"
             }
         }
 
@@ -979,6 +1160,7 @@ final class AppState: ObservableObject {
         case invalidProvider
         case invalidModel
         case missingCredential
+        case restoreUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -990,6 +1172,8 @@ final class AppState: ObservableObject {
                 return "Model 不可為空。"
             case .missingCredential:
                 return "尚未設定 API key。請先在 Credentials 輸入 API key。"
+            case .restoreUnavailable:
+                return "目前的 client adapter 不支援 Codex config backup restore。"
             }
         }
     }

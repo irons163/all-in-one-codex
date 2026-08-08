@@ -13,6 +13,9 @@ public enum CodexSwitchError: LocalizedError, Equatable, Sendable {
     case configurationChanged
     case modelCatalogChanged
     case foreignModelCatalogPointer
+    case unsafeBackupPath
+    case invalidConfigurationBackup
+    case configurationBackupTooLarge
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +41,12 @@ public enum CodexSwitchError: LocalizedError, Equatable, Sendable {
             return "The app-owned Codex model catalog changed after it was applied, so it cannot be undone safely."
         case .foreignModelCatalogPointer:
             return "The Codex configuration already points to a model catalog that is not owned by this app."
+        case .unsafeBackupPath:
+            return "The selected configuration backup path is unsafe."
+        case .invalidConfigurationBackup:
+            return "The selected configuration backup is not readable TOML."
+        case .configurationBackupTooLarge:
+            return "The selected configuration backup exceeds the supported size limit."
         }
     }
 }

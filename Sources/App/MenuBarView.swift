@@ -17,6 +17,15 @@ struct MenuBarView: View {
                 compact: true
             )
 
+            if appState.hasPersistentUndo {
+                Label(
+                    "Persistent Undo：\(appState.receiptJournalEntries.count) 筆",
+                    systemImage: "arrow.uturn.backward.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
             if appState.profileItems.contains(where: { $0.requiresLoopbackBridge }) {
                 BridgeStatusBadge(status: appState.bridgeStatus)
                 Text("需要時由 Apply 自動啟動；不需另外手動啟動。")

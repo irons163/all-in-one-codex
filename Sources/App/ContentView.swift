@@ -4,19 +4,20 @@ struct ContentView: View {
     @EnvironmentObject private var appState: AppState
 
     var body: some View {
-        NavigationSplitView {
-            profileSidebar
-        } detail: {
-            detailContent
-        }
-        .frame(minWidth: 900, minHeight: 560)
-        .safeAreaInset(edge: .top, spacing: 0) {
+        VStack(spacing: 0) {
             if appState.restartRequired {
                 RestartRequiredBanner()
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 6)
+            }
+
+            NavigationSplitView {
+                profileSidebar
+            } detail: {
+                detailContent
             }
         }
+        .frame(minWidth: 900, minHeight: 560)
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -30,6 +31,13 @@ struct ContentView: View {
                     Task { await appState.undoLastSwitch() }
                 } label: {
                     Label("Undo", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(appState.isBusy || !appState.canUndoLastSwitch)
+
+                Button {
+                    appState.beginRestore()
+                } label: {
+                    Label("Restore Backup", systemImage: "arrow.counterclockwise")
                 }
                 .disabled(appState.isBusy)
             }
@@ -46,6 +54,16 @@ struct ContentView: View {
                 .environmentObject(appState)
             }
             .frame(minWidth: 520, minHeight: 520)
+        }
+        .sheet(
+            isPresented: $appState.isShowingRestore,
+            onDismiss: appState.cancelRestore
+        ) {
+            NavigationStack {
+                RestoreBackupView()
+                    .environmentObject(appState)
+            }
+            .frame(minWidth: 560, minHeight: 560)
         }
         .alert(
             "操作失敗",
@@ -135,6 +153,201 @@ struct ContentView: View {
     }
 }
 
+private struct RestoreBackupView: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var pendingBackup: CodexConfigurationBackup?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if appState.isBusy {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Restore 處理中…")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
+            }
+
+            List {
+                Section("Config backups") {
+                    if appState.restoreBackups.isEmpty {
+                        ContentUnavailableView(
+                            "尚無可用的 config backups",
+                            systemImage: "archivebox",
+                            description: Text(
+                                "完成一次 Apply 後，App 建立的 config.toml backup 會出現在這裡。"
+                            )
+                        )
+                        .listRowSeparator(.hidden)
+                    } else {
+                        ForEach(appState.restoreBackups) { backup in
+                            Button {
+                                pendingBackup = backup
+                            } label: {
+                                RestoreBackupRow(backup: backup)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(appState.isBusy)
+                        }
+                    }
+                }
+
+                Section("Undo journal") {
+                    if appState.receiptJournalEntries.isEmpty {
+                        Text("尚無 persistent Undo journal。成功 Apply 或 Restore 後會自動保留。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(appState.receiptJournalEntries) { entry in
+                            UndoJournalRow(entry: entry)
+                        }
+                    }
+                }
+            }
+            .listStyle(.inset)
+
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "info.circle")
+                    .foregroundStyle(.secondary)
+                Text(
+                    "Restore 只會復原 config.toml 與 app-owned model catalog；"
+                        + "不會複製或刪除 sessions、history，也不會搬移約 20GB 的 session data。"
+                        + "完成後請完全退出並重新啟動 Codex。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 10)
+            .background(.bar)
+        }
+        .navigationTitle("Restore Backup")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") {
+                    appState.cancelRestore()
+                }
+                .disabled(appState.isBusy)
+            }
+        }
+        .alert(
+            "確認 Restore Backup？",
+            isPresented: Binding(
+                get: { pendingBackup != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingBackup = nil
+                    }
+                }
+            )
+        ) {
+            Button("Restore Backup", role: .destructive) {
+                guard let pendingBackup else { return }
+                self.pendingBackup = nil
+                Task {
+                    await appState.restore(pendingBackup)
+                }
+            }
+            .disabled(appState.isBusy)
+            Button("Cancel", role: .cancel) {
+                pendingBackup = nil
+            }
+            .disabled(appState.isBusy)
+        } message: {
+            if let pendingBackup {
+                Text(
+                    "時間：\(formattedDate(pendingBackup.date))\n"
+                        + "大小：\(formattedByteSize(pendingBackup.byteSize))\n\n"
+                        + "這是第二步確認。只會復原 config.toml 與 app-owned model catalog，"
+                        + "不會修改 auth、sessions、history 或 state database。完成後必須完全重啟 Codex。"
+                )
+            }
+        }
+    }
+
+    private func formattedDate(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func formattedByteSize(_ byteSize: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: byteSize, countStyle: .file)
+    }
+}
+
+private struct RestoreBackupRow: View {
+    let backup: CodexConfigurationBackup
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc.badge.arrow.up")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(backup.date.formatted(date: .abbreviated, time: .shortened))
+                    .font(.body)
+                Text(ByteCountFormatter.string(fromByteCount: backup.byteSize, countStyle: .file))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(backup.date.formatted(date: .abbreviated, time: .shortened)), "
+                + "\(ByteCountFormatter.string(fromByteCount: backup.byteSize, countStyle: .file))"
+        )
+    }
+}
+
+private struct UndoJournalRow: View {
+    let entry: SwitchReceiptJournalEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.uturn.backward.circle")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.profileName ?? "Config backup restore")
+                    .font(.body)
+                if let providerDisplayName = entry.providerDisplayName,
+                   let model = entry.model
+                {
+                    Text("\(providerDisplayName) · \(model)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("config.toml + app-owned model catalog")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct ProfileRow: View {
     let item: AppState.ProfileListItem
 
@@ -197,6 +410,7 @@ struct RestartRequiredBanner: View {
                 Text(AppState.restartRequiredMessage)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 8)

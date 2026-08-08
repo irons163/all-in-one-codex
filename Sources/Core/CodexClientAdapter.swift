@@ -14,6 +14,9 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
     public let catalogBeforeHash: String?
     public let catalogAfterHash: String?
     public let originalCatalogExisted: Bool
+    /// Whether the transaction's resulting catalog existed. Older apply
+    /// receipts always created one, so missing legacy data decodes as `true`.
+    public let catalogAfterExisted: Bool
 
     public init(
         backupURL: URL,
@@ -25,7 +28,8 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
         catalogBackupURL: URL? = nil,
         catalogBeforeHash: String? = nil,
         catalogAfterHash: String? = nil,
-        originalCatalogExisted: Bool = false
+        originalCatalogExisted: Bool = false,
+        catalogAfterExisted: Bool = true
     ) {
         self.backupURL = backupURL
         self.beforeHash = beforeHash
@@ -37,6 +41,7 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
         self.catalogBeforeHash = catalogBeforeHash
         self.catalogAfterHash = catalogAfterHash
         self.originalCatalogExisted = originalCatalogExisted
+        self.catalogAfterExisted = catalogAfterExisted
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -50,6 +55,7 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
         case catalogBeforeHash
         case catalogAfterHash
         case originalCatalogExisted
+        case catalogAfterExisted
     }
 
     /// Older receipts only recorded `config.toml`. Decode their missing catalog
@@ -69,6 +75,10 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
             Bool.self,
             forKey: .originalCatalogExisted
         ) ?? false
+        catalogAfterExisted = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .catalogAfterExisted
+        ) ?? true
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -83,6 +93,7 @@ public struct SwitchReceipt: Codable, Hashable, Sendable {
         try container.encodeIfPresent(catalogBeforeHash, forKey: .catalogBeforeHash)
         try container.encodeIfPresent(catalogAfterHash, forKey: .catalogAfterHash)
         try container.encode(originalCatalogExisted, forKey: .originalCatalogExisted)
+        try container.encode(catalogAfterExisted, forKey: .catalogAfterExisted)
     }
 }
 
@@ -122,6 +133,7 @@ public struct CodexClientAdapter: ClientAdapter {
     private let credentialStore: any CredentialStoring
     private let projector: CodexConfigProjector
     private let bridgeManager: any OpenCodeGoBridgeManaging
+    private let atomicWriteInterceptor: (any CodexAtomicWriteIntercepting)?
 
     public var bridgeStatus: OpenCodeGoBridgeStatus {
         bridgeManager.status
@@ -133,16 +145,154 @@ public struct CodexClientAdapter: ClientAdapter {
         projector: CodexConfigProjector = CodexConfigProjector(),
         bridgeManager: any OpenCodeGoBridgeManaging = OpenCodeGoBridgeManager.shared
     ) {
+        self.init(
+            configURL: configURL,
+            credentialStore: credentialStore,
+            projector: projector,
+            bridgeManager: bridgeManager,
+            atomicWriteInterceptor: nil
+        )
+    }
+
+    /// Internal test seam for proving paired config/catalog rollback behavior.
+    init(
+        configURL: URL,
+        credentialStore: any CredentialStoring,
+        projector: CodexConfigProjector,
+        bridgeManager: any OpenCodeGoBridgeManaging,
+        atomicWriteInterceptor: (any CodexAtomicWriteIntercepting)?
+    ) {
         self.configURL = configURL
         self.credentialStore = credentialStore
         self.projector = projector
         self.bridgeManager = bridgeManager
+        self.atomicWriteInterceptor = atomicWriteInterceptor
     }
 
     public var catalogURL: URL {
         configURL
             .deletingLastPathComponent()
             .appendingPathComponent(CodexModelCatalog.filename, isDirectory: false)
+    }
+
+    /// Returns metadata for app-created `config.toml` backups only, newest
+    /// first. No configuration, credential, session, or history contents are
+    /// included in the returned inventory.
+    public func listConfigurationBackups() throws -> [CodexConfigurationBackup] {
+        try CodexBackupStore.listConfigurationBackups(for: configURL)
+    }
+
+    /// Restores a selected app-created configuration backup and returns a
+    /// receipt that can be passed to `undo(_:)` to restore the prior state.
+    ///
+    /// Restore is intentionally limited to `config.toml` and this app's fixed
+    /// model catalog path. It never changes `auth.json`, Keychain credentials,
+    /// session JSONL, history, or Codex state databases.
+    public func restoreConfigurationBackup(
+        _ backup: CodexConfigurationBackup
+    ) throws -> SwitchReceipt {
+        try restoreConfigurationBackup(at: backup.url)
+    }
+
+    /// Convenience overload for callers that retain only a selected backup URL.
+    public func restoreConfigurationBackup(_ backupURL: URL) throws -> SwitchReceipt {
+        try restoreConfigurationBackup(at: backupURL)
+    }
+
+    /// Restores one selected app-created configuration backup after strict
+    /// path, size, UTF-8, and structural TOML checks.
+    public func restoreConfigurationBackup(at backupURL: URL) throws -> SwitchReceipt {
+        let restoredConfigurationData = try CodexBackupStore.configurationData(
+            from: backupURL,
+            for: configURL
+        )
+        guard let restoredConfiguration = String(
+            data: restoredConfigurationData,
+            encoding: .utf8
+        ) else {
+            throw CodexSwitchError.invalidConfigurationBackup
+        }
+
+        let configurationSnapshot = try readConfiguration()
+        let ownedCatalogURL = try ownedCatalogURL()
+        let catalogSnapshot = try readCatalogSnapshot(
+            at: ownedCatalogURL,
+            validateSchema: false
+        )
+        let restoredCatalog: FileSnapshot
+        if try Self.hasAppOwnedCatalogPointer(in: restoredConfiguration) {
+            restoredCatalog = FileSnapshot(
+                data: try CodexBackupStore.catalogDataMatchingConfigurationBackup(
+                    backupURL,
+                    for: configURL
+                ),
+                existed: true
+            )
+        } else {
+            // A restored external (or absent) pointer must never cause us to
+            // modify that external catalog. Only the fixed app-owned file is
+            // removed as part of this transaction.
+            restoredCatalog = FileSnapshot(data: Data(), existed: false)
+        }
+
+        let timestamp = Date()
+        let safetyBackupURL = try createBackup(
+            for: configurationSnapshot.data,
+            sourceURL: configURL,
+            timestamp: timestamp
+        )
+        let catalogSafetyBackupURL = try createBackup(
+            for: catalogSnapshot.data,
+            sourceURL: ownedCatalogURL,
+            timestamp: timestamp
+        )
+
+        // Do not overwrite a configuration or catalog changed after its
+        // safety snapshot was taken.
+        let currentConfiguration = try readConfiguration()
+        guard snapshotsMatch(
+            currentConfiguration.fileSnapshot,
+            configurationSnapshot.fileSnapshot
+        ) else {
+            throw CodexSwitchError.configurationChanged
+        }
+        let currentCatalog = try readCatalogSnapshot(
+            at: ownedCatalogURL,
+            validateSchema: false
+        )
+        guard snapshotsMatch(currentCatalog, catalogSnapshot) else {
+            throw CodexSwitchError.modelCatalogChanged
+        }
+
+        try writeTransaction(
+            catalog: restoredCatalog,
+            configuration: FileSnapshot(
+                data: restoredConfigurationData,
+                existed: true
+            ),
+            originalCatalog: catalogSnapshot,
+            originalConfiguration: configurationSnapshot.fileSnapshot,
+            catalogURL: ownedCatalogURL
+        )
+
+        return SwitchReceipt(
+            backupURL: safetyBackupURL,
+            beforeHash: hash(configurationSnapshot.data),
+            afterHash: hash(restoredConfigurationData),
+            timestamp: timestamp,
+            originalConfigExisted: configurationSnapshot.existed,
+            catalogURL: ownedCatalogURL,
+            catalogBackupURL: catalogSafetyBackupURL,
+            catalogBeforeHash: hash(catalogSnapshot.data),
+            catalogAfterHash: hash(restoredCatalog.data),
+            originalCatalogExisted: catalogSnapshot.existed,
+            catalogAfterExisted: restoredCatalog.existed
+        )
+    }
+
+    /// Alias for clients that present configuration backups generically.
+    public func restoreBackup(at backupURL: URL) throws -> SwitchReceipt {
+        try restoreConfigurationBackup(at: backupURL)
     }
 
     /// Starts the loopback bridge only when the active existing configuration
@@ -202,8 +352,8 @@ public struct CodexClientAdapter: ClientAdapter {
             try bridgeManager.ensureRunning()
         }
         try writeTransaction(
-            catalogData: catalogData,
-            configurationData: projectedData,
+            catalog: FileSnapshot(data: catalogData, existed: true),
+            configuration: FileSnapshot(data: projectedData, existed: true),
             originalCatalog: catalogSnapshot,
             originalConfiguration: configurationSnapshot.fileSnapshot,
             catalogURL: ownedCatalogURL
@@ -232,7 +382,7 @@ public struct CodexClientAdapter: ClientAdapter {
             throw CodexSwitchError.configurationChanged
         }
 
-        let configurationBackup = try readBackup(at: receipt.backupURL)
+        let configurationBackup = try readConfigurationBackup(at: receipt.backupURL)
         guard hash(configurationBackup) == receipt.beforeHash else {
             throw CodexSwitchError.backupIntegrityConflict
         }
@@ -264,13 +414,13 @@ public struct CodexClientAdapter: ClientAdapter {
             validateSchema: false
         )
         guard
-            currentCatalog.existed,
+            currentCatalog.existed == catalogTransaction.afterExisted,
             hash(currentCatalog.data) == catalogTransaction.afterHash
         else {
             throw CodexSwitchError.modelCatalogChanged
         }
 
-        let catalogBackup = try readBackup(at: catalogTransaction.backupURL)
+        let catalogBackup = try readCatalogBackup(at: catalogTransaction.backupURL)
         guard hash(catalogBackup) == catalogTransaction.beforeHash else {
             throw CodexSwitchError.backupIntegrityConflict
         }
@@ -349,12 +499,23 @@ public struct CodexClientAdapter: ClientAdapter {
         return FileSnapshot(data: data, existed: true)
     }
 
-    private func readBackup(at url: URL) throws -> Data {
-        do {
-            return try Data(contentsOf: url)
-        } catch {
-            throw CodexSwitchError.backupUnavailable
-        }
+    private func readConfigurationBackup(at url: URL) throws -> Data {
+        // Undo accepts legacy text backups, but still constrains the receipt
+        // path to our backup directory and rejects non-UTF-8 content.
+        try CodexBackupStore.configurationData(
+            from: url,
+            for: configURL,
+            validateTOML: false
+        )
+    }
+
+    private func readCatalogBackup(at url: URL) throws -> Data {
+        try CodexBackupStore.backupData(
+            from: url,
+            for: configURL,
+            sourceFilename: CodexModelCatalog.filename,
+            maximumBytes: CodexModelCatalog.maximumCatalogBytes
+        )
     }
 
     private func catalogTransaction(
@@ -390,7 +551,8 @@ public struct CodexClientAdapter: ClientAdapter {
             backupURL: backupURL,
             beforeHash: beforeHash,
             afterHash: afterHash,
-            originalExisted: receipt.originalCatalogExisted
+            originalExisted: receipt.originalCatalogExisted,
+            afterExisted: receipt.catalogAfterExisted
         )
     }
 
@@ -405,7 +567,7 @@ public struct CodexClientAdapter: ClientAdapter {
 
         try ensurePrivateDirectory(directoryURL)
 
-        let timestampComponent = Self.backupTimestampFormatter.string(from: timestamp)
+        let timestampComponent = CodexBackupStore.timestampComponent(for: timestamp)
         var candidate = directoryURL.appendingPathComponent(
             "\(sourceURL.lastPathComponent).backup-\(timestampComponent)"
         )
@@ -422,20 +584,21 @@ public struct CodexClientAdapter: ClientAdapter {
     }
 
     private func writeTransaction(
-        catalogData: Data,
-        configurationData: Data,
+        catalog: FileSnapshot,
+        configuration: FileSnapshot,
         originalCatalog: FileSnapshot,
         originalConfiguration: FileSnapshot,
         catalogURL: URL
     ) throws {
         do {
-            try atomicallyWrite(catalogData, to: catalogURL)
-            try atomicallyWrite(configurationData, to: configURL)
+            try restore(snapshot: catalog, to: catalogURL)
+            try restore(snapshot: configuration, to: configURL)
         } catch {
-            do {
-                try restore(snapshot: originalConfiguration, to: configURL)
-                try restore(snapshot: originalCatalog, to: catalogURL)
-            } catch {
+            guard rollback(
+                configuration: originalConfiguration,
+                catalog: originalCatalog,
+                catalogURL: catalogURL
+            ) else {
                 throw CodexSwitchError.unableToWriteConfiguration
             }
             throw error
@@ -453,14 +616,37 @@ public struct CodexClientAdapter: ClientAdapter {
             try restore(snapshot: catalog, to: catalogURL)
             try restore(snapshot: configuration, to: configURL)
         } catch {
-            do {
-                try restore(snapshot: currentCatalog, to: catalogURL)
-                try restore(snapshot: currentConfiguration, to: configURL)
-            } catch {
+            guard rollback(
+                configuration: currentConfiguration,
+                catalog: currentCatalog,
+                catalogURL: catalogURL
+            ) else {
                 throw CodexSwitchError.unableToWriteConfiguration
             }
             throw error
         }
+    }
+
+    /// Attempts both rollbacks even when the first one fails, so a partial
+    /// config/catalog transaction has the best chance of returning to its
+    /// original pair before reporting a write failure.
+    private func rollback(
+        configuration: FileSnapshot,
+        catalog: FileSnapshot,
+        catalogURL: URL
+    ) -> Bool {
+        var succeeded = true
+        do {
+            try restore(snapshot: configuration, to: configURL)
+        } catch {
+            succeeded = false
+        }
+        do {
+            try restore(snapshot: catalog, to: catalogURL)
+        } catch {
+            succeeded = false
+        }
+        return succeeded
     }
 
     private func restore(snapshot: FileSnapshot, to destination: URL) throws {
@@ -498,6 +684,11 @@ public struct CodexClientAdapter: ClientAdapter {
     private func atomicallyWrite(_ data: Data, to destination: URL) throws {
         let directoryURL = destination.deletingLastPathComponent()
         try ensurePrivateDirectory(directoryURL)
+        do {
+            try atomicWriteInterceptor?.willWriteAtomically(to: destination)
+        } catch {
+            throw CodexSwitchError.unableToWriteConfiguration
+        }
 
         let temporaryURL = directoryURL.appendingPathComponent(
             ".\(destination.lastPathComponent).\(UUID().uuidString).tmp"
@@ -570,6 +761,107 @@ public struct CodexClientAdapter: ClientAdapter {
         SHA256.hash(data: data)
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    private func snapshotsMatch(_ lhs: FileSnapshot, _ rhs: FileSnapshot) -> Bool {
+        lhs.existed == rhs.existed && hash(lhs.data) == hash(rhs.data)
+    }
+
+    /// Identifies only the pointer shape emitted by this application's managed
+    /// active block. A bare or malformed fixed-name pointer is rejected rather
+    /// than guessed, preventing an incomplete backup from pairing with the
+    /// wrong catalog.
+    private static func hasAppOwnedCatalogPointer(in configuration: String) throws -> Bool {
+        var activeBeginIndices: [Int] = []
+        var activeEndIndices: [Int] = []
+        var catalogMarkerIndices: [Int] = []
+        var catalogPointers: [(index: Int, value: String?)] = []
+        var multilineDelimiter: String?
+
+        for (index, rawLine) in configuration
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+        {
+            var line = String(rawLine)
+            if line.last == "\r" {
+                line.removeLast()
+            }
+
+            if let activeDelimiter = multilineDelimiter {
+                if line.contains(activeDelimiter) {
+                    multilineDelimiter = nil
+                }
+                continue
+            }
+            if let delimiter = multilineDelimiterOpened(in: line) {
+                multilineDelimiter = delimiter
+                continue
+            }
+
+            switch line.trimmingCharacters(in: .whitespacesAndNewlines) {
+            case CodexConfigProjector.activeBeginMarker:
+                activeBeginIndices.append(index)
+                continue
+            case CodexConfigProjector.activeEndMarker:
+                activeEndIndices.append(index)
+                continue
+            case CodexConfigProjector.catalogPointerMarker:
+                catalogMarkerIndices.append(index)
+                continue
+            default:
+                break
+            }
+
+            let code = codeBeforeComment(in: line)
+                .trimmingCharacters(in: .whitespaces)
+            guard !code.isEmpty else {
+                continue
+            }
+            if isTomlTableHeader(code) {
+                break
+            }
+
+            guard let equalsIndex = code.firstIndex(of: "=") else {
+                continue
+            }
+            let rawKey = code[..<equalsIndex].trimmingCharacters(in: .whitespaces)
+            let key = rawKey.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            guard key == "model_catalog_json" else {
+                continue
+            }
+            let rawValue = code[code.index(after: equalsIndex)...]
+                .trimmingCharacters(in: .whitespaces)
+            catalogPointers.append((
+                index: index,
+                value: tomlStringValue(rawValue)
+            ))
+        }
+
+        guard
+            activeBeginIndices.count == activeEndIndices.count,
+            activeBeginIndices.count <= 1,
+            catalogMarkerIndices.count <= 1,
+            catalogPointers.count <= 1
+        else {
+            throw CodexSwitchError.invalidConfigurationBackup
+        }
+        guard
+            let pointer = catalogPointers.first,
+            pointer.value == CodexModelCatalog.filename
+        else {
+            return false
+        }
+        guard
+            let activeBegin = activeBeginIndices.first,
+            let activeEnd = activeEndIndices.first,
+            let catalogMarker = catalogMarkerIndices.first,
+            activeBegin < activeEnd,
+            (activeBegin...activeEnd).contains(catalogMarker),
+            (activeBegin...activeEnd).contains(pointer.index)
+        else {
+            throw CodexSwitchError.invalidConfigurationBackup
+        }
+        return true
     }
 
     private static func activeModelProvider(in configuration: String) -> String? {
@@ -692,13 +984,6 @@ public struct CodexClientAdapter: ClientAdapter {
         return String(trimmed.dropFirst().dropLast())
     }
 
-    private static let backupTimestampFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyyMMdd'T'HHmmss.SSS'Z'"
-        return formatter
-    }()
 }
 
 private struct ConfigurationSnapshot {
@@ -716,10 +1001,16 @@ private struct FileSnapshot {
     let existed: Bool
 }
 
+/// Test-only fault injector for verifying paired file transaction rollback.
+protocol CodexAtomicWriteIntercepting: AnyObject {
+    func willWriteAtomically(to destination: URL) throws
+}
+
 private struct CatalogTransaction {
     let catalogURL: URL
     let backupURL: URL
     let beforeHash: String
     let afterHash: String
     let originalExisted: Bool
+    let afterExisted: Bool
 }

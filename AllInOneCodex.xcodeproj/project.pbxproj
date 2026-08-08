@@ -21,6 +21,8 @@
 		6B63EB3C1B2DC6B83444743D /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 232A5BD77D60FE4C7C6045C5 /* MenuBarView.swift */; };
 		8ACE4C9AD018BF766C7AE24C /* BridgeTransportServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50264E4A6B08F9E1FF9A734A /* BridgeTransportServer.swift */; };
 		8D05B2780C820B5223806660 /* ProfileEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF3087FDA140118AC13E4425 /* ProfileEditorView.swift */; };
+		9161B81C13C08B9DBEAC404D /* CodexBackupStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F126FE0D6F113AF8AB3001 /* CodexBackupStore.swift */; };
+		973B9A463034F858659DF8E4 /* SwitchReceiptRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD7B89544E9D012E682527A2 /* SwitchReceiptRepository.swift */; };
 		BAF0DB9E83CDFAB36DAEE7E7 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6453E9995E39F2C120A913C /* AppState.swift */; };
 		C4812B742DC4E13D2408ACA0 /* CodexClientAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55B9926684FDBC96D2447846 /* CodexClientAdapter.swift */; };
 /* End PBXBuildFile section */
@@ -48,10 +50,12 @@
 		97107184FD9E414BC12D8BFA /* AllInOneCodexApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllInOneCodexApp.swift; sourceTree = "<group>"; };
 		9CF7E3793A0150410FD30659 /* ChatResponseConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatResponseConverter.swift; sourceTree = "<group>"; };
 		9FA1B63779DDD082993C4901 /* ProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileRepository.swift; sourceTree = "<group>"; };
+		AD7B89544E9D012E682527A2 /* SwitchReceiptRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitchReceiptRepository.swift; sourceTree = "<group>"; };
 		B6453E9995E39F2C120A913C /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		BF3087FDA140118AC13E4425 /* ProfileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditorView.swift; sourceTree = "<group>"; };
 		C1C85CF0717CC1B89FC40288 /* CodexConfigProjector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexConfigProjector.swift; sourceTree = "<group>"; };
 		DC9F2BD93831DA9F96805418 /* AllInOneCodex.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AllInOneCodex.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7F126FE0D6F113AF8AB3001 /* CodexBackupStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexBackupStore.swift; sourceTree = "<group>"; };
 		EC6D8B1F2FE3BD54CC8579AC /* AllInOneCodexTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AllInOneCodexTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F20B8C3A735E1693D4DE1FF4 /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -60,12 +64,14 @@
 		11A98F587D830D6AF2B28FDD /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				E7F126FE0D6F113AF8AB3001 /* CodexBackupStore.swift */,
 				55B9926684FDBC96D2447846 /* CodexClientAdapter.swift */,
 				C1C85CF0717CC1B89FC40288 /* CodexConfigProjector.swift */,
 				102E90ED68914CB6CDB25E2F /* CodexModelCatalog.swift */,
 				437A7B0731A952AB3B2DAE37 /* CredentialStore.swift */,
 				9FA1B63779DDD082993C4901 /* ProfileRepository.swift */,
 				F20B8C3A735E1693D4DE1FF4 /* Provider.swift */,
+				AD7B89544E9D012E682527A2 /* SwitchReceiptRepository.swift */,
 				747701D555D3E2657E942F0C /* OpenCodeGoBridge */,
 			);
 			path = Core;
@@ -224,6 +230,7 @@
 				01273BC335A40571EA139759 /* BridgeModelsErrors.swift in Sources */,
 				8ACE4C9AD018BF766C7AE24C /* BridgeTransportServer.swift in Sources */,
 				5CDCFC10519B4EC3B3023B93 /* ChatResponseConverter.swift in Sources */,
+				9161B81C13C08B9DBEAC404D /* CodexBackupStore.swift in Sources */,
 				C4812B742DC4E13D2408ACA0 /* CodexClientAdapter.swift in Sources */,
 				36B1DF10360B0D1152F7504D /* CodexConfigProjector.swift in Sources */,
 				4ECCDD9E38F5E5693C683C55 /* CodexModelCatalog.swift in Sources */,
@@ -234,6 +241,7 @@
 				56DFF33B81B81285225ACF4C /* ProfileRepository.swift in Sources */,
 				6A52D444D5C8D237B141A725 /* Provider.swift in Sources */,
 				59E88159A014823E40EE09A3 /* ResponsesRequestConverter.swift in Sources */,
+				973B9A463034F858659DF8E4 /* SwitchReceiptRepository.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

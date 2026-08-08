@@ -364,6 +364,323 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertNil(receipt.catalogBeforeHash)
         XCTAssertNil(receipt.catalogAfterHash)
         XCTAssertFalse(receipt.originalCatalogExisted)
+        XCTAssertTrue(receipt.catalogAfterExisted)
+    }
+
+    func testSwitchReceiptRepositoryRoundTripsRetainsNewestAndStoresNoSecrets() async throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let storageURL = directoryURL
+            .appendingPathComponent("AllInOneCodex", isDirectory: true)
+            .appendingPathComponent("switch-receipts.json")
+        let repository = SwitchReceiptRepository(storageURL: storageURL)
+        let profile = makeProfile(
+            presetID: .openRouter,
+            model: "vendor/journal-model"
+        )
+        let credentialMaterial = "credential-\(UUID().uuidString)"
+        let configurationContents = "approval_policy = \"never\"\n\(UUID().uuidString)"
+
+        for index in 0...20 {
+            let receipt = SwitchReceipt(
+                backupURL: directoryURL
+                    .appendingPathComponent("backups", isDirectory: true)
+                    .appendingPathComponent("config.toml.backup-\(index)"),
+                beforeHash: "before-\(index)",
+                afterHash: "after-\(index)",
+                timestamp: Date(timeIntervalSince1970: Double(index)),
+                originalConfigExisted: true
+            )
+            _ = try await repository.save(receipt: receipt, profile: profile)
+        }
+
+        let entries = await repository.load()
+        XCTAssertEqual(entries.count, SwitchReceiptRepository.maximumEntries)
+        XCTAssertEqual(entries.first?.receipt.afterHash, "after-20")
+        XCTAssertFalse(entries.contains { $0.receipt.beforeHash == "before-0" })
+        XCTAssertEqual(entries.first?.profileName, profile.name)
+        XCTAssertEqual(entries.first?.model, profile.model)
+
+        let serialized = try String(contentsOf: storageURL, encoding: .utf8)
+        XCTAssertFalse(serialized.contains(credentialMaterial))
+        XCTAssertFalse(serialized.contains(configurationContents))
+
+        let reloadedRepository = SwitchReceiptRepository(storageURL: storageURL)
+        let reloaded = await reloadedRepository.load()
+        XCTAssertEqual(reloaded, entries)
+        let newestID = try XCTUnwrap(entries.first?.id)
+        try await repository.delete(id: newestID)
+        let remainingEntries = await repository.load()
+        XCTAssertEqual(remainingEntries.count, 19)
+
+        let fileAttributes = try FileManager.default.attributesOfItem(atPath: storageURL.path)
+        let filePermissions = try XCTUnwrap(
+            (fileAttributes[.posixPermissions] as? NSNumber)?.intValue
+        )
+        XCTAssertEqual(filePermissions & 0o777, 0o600)
+        let directoryAttributes = try FileManager.default.attributesOfItem(
+            atPath: storageURL.deletingLastPathComponent().path
+        )
+        let directoryPermissions = try XCTUnwrap(
+            (directoryAttributes[.posixPermissions] as? NSNumber)?.intValue
+        )
+        XCTAssertEqual(directoryPermissions & 0o777, 0o700)
+    }
+
+    func testSwitchReceiptRepositoryTreatsCorruptJournalAsEmpty() async throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let storageURL = directoryURL
+            .appendingPathComponent("AllInOneCodex", isDirectory: true)
+            .appendingPathComponent("switch-receipts.json")
+        try FileManager.default.createDirectory(
+            at: storageURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{not valid json".utf8).write(to: storageURL)
+
+        let repository = SwitchReceiptRepository(storageURL: storageURL)
+        let entries = await repository.load()
+        XCTAssertTrue(entries.isEmpty)
+    }
+
+    func testConfigurationBackupInventoryOrdersOnlyValidConfigurationBackupsAndRejectsTraversal() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let backupsURL = configURL.deletingLastPathComponent()
+            .appendingPathComponent("backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
+
+        let olderBackupURL = backupsURL.appendingPathComponent(
+            "config.toml.backup-20260101T010203.004Z"
+        )
+        let newerBackupURL = backupsURL.appendingPathComponent(
+            "config.toml.backup-20260201T010203.004Z"
+        )
+        try Data("approval_policy = \"on-request\"\n".utf8).write(to: olderBackupURL)
+        try Data("approval_policy = \"never\"\n".utf8).write(to: newerBackupURL)
+        try Data("not a configuration backup".utf8).write(
+            to: backupsURL.appendingPathComponent(
+                "all-in-one-codex-model-catalog.json.backup-20260201T010203.004Z"
+            )
+        )
+        try Data("ignored".utf8).write(
+            to: backupsURL.appendingPathComponent("unrelated.backup-20260201T010203.004Z")
+        )
+
+        let adapter = CodexClientAdapter(configURL: configURL, credentialStore: FakeCredentialStore())
+        let backups = try adapter.listConfigurationBackups()
+        XCTAssertEqual(backups.map(\.url), [
+            newerBackupURL.standardizedFileURL,
+            olderBackupURL.standardizedFileURL
+        ])
+        XCTAssertEqual(backups.map(\.kind), [.configuration, .configuration])
+        XCTAssertEqual(backups.first?.byteSize, Int64(Data("approval_policy = \"never\"\n".utf8).count))
+
+        let outsideDirectoryURL = directoryURL.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outsideDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        try Data("approval_policy = \"never\"\n".utf8).write(
+            to: outsideDirectoryURL.appendingPathComponent(
+                "config.toml.backup-20260304T050607.008Z"
+            )
+        )
+        let traversalURL = backupsURL.appendingPathComponent(
+            "../outside/config.toml.backup-20260304T050607.008Z"
+        )
+        XCTAssertThrowsError(
+            try adapter.restoreConfigurationBackup(at: traversalURL)
+        ) { error in
+            XCTAssertEqual(error as? CodexSwitchError, .unsafeBackupPath)
+        }
+    }
+
+    func testManualRestoreRestoresMatchingCatalogAndSafetyReceiptUndoesIt() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let configDirectoryURL = configURL.deletingLastPathComponent()
+        let catalogURL = configDirectoryURL.appendingPathComponent(CodexModelCatalog.filename)
+        let projector = CodexConfigProjector()
+        let currentProfile = makeProfile(
+            presetID: .openRouter,
+            model: "vendor/current-model"
+        )
+        let restoredProfile = makeProfile(
+            presetID: .openRouter,
+            model: "vendor/restored-model"
+        )
+        let currentConfiguration = try projector.project(
+            original: "# Current configuration\n",
+            profile: currentProfile
+        )
+        let currentCatalog = try CodexModelCatalog.make(for: currentProfile).encodedData()
+        try Data(currentConfiguration.utf8).write(to: configURL)
+        try currentCatalog.write(to: catalogURL)
+
+        let backupsURL = configDirectoryURL.appendingPathComponent("backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
+        let suffix = "20260304T050607.008Z"
+        let selectedBackupURL = backupsURL.appendingPathComponent(
+            "config.toml.backup-\(suffix)"
+        )
+        let restoredConfiguration = try projector.project(
+            original: "# Restored configuration\n",
+            profile: restoredProfile
+        )
+        let restoredCatalog = try CodexModelCatalog.make(for: restoredProfile).encodedData()
+        try Data(restoredConfiguration.utf8).write(to: selectedBackupURL)
+        try restoredCatalog.write(
+            to: backupsURL.appendingPathComponent(
+                "\(CodexModelCatalog.filename).backup-\(suffix)"
+            )
+        )
+
+        let adapter = CodexClientAdapter(configURL: configURL, credentialStore: FakeCredentialStore())
+        let receipt = try adapter.restoreConfigurationBackup(at: selectedBackupURL)
+        XCTAssertEqual(try Data(contentsOf: configURL), Data(restoredConfiguration.utf8))
+        XCTAssertEqual(try Data(contentsOf: catalogURL), restoredCatalog)
+        XCTAssertTrue(receipt.catalogAfterExisted)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.backupURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(receipt.catalogBackupURL).path))
+
+        try adapter.undo(receipt)
+        XCTAssertEqual(try Data(contentsOf: configURL), Data(currentConfiguration.utf8))
+        XCTAssertEqual(try Data(contentsOf: catalogURL), currentCatalog)
+
+        let conflictReceipt = try adapter.restoreConfigurationBackup(at: selectedBackupURL)
+        try Data("# External edit\n".utf8).write(to: configURL)
+        XCTAssertThrowsError(try adapter.undo(conflictReceipt)) { error in
+            XCTAssertEqual(error as? CodexSwitchError, .configurationChanged)
+        }
+    }
+
+    func testManualRestoreRejectsMissingCatalogPairWithoutPartialChange() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let configDirectoryURL = configURL.deletingLastPathComponent()
+        let catalogURL = configDirectoryURL.appendingPathComponent(CodexModelCatalog.filename)
+        let currentConfiguration = "approval_policy = \"on-request\"\n"
+        let currentCatalog = try CodexModelCatalog.make(
+            for: makeProfile(presetID: .openRouter, model: "vendor/current-model")
+        ).encodedData()
+        try Data(currentConfiguration.utf8).write(to: configURL)
+        try currentCatalog.write(to: catalogURL)
+
+        let restoreProfile = makeProfile(
+            presetID: .openRouter,
+            model: "vendor/restored-model"
+        )
+        let selectedConfiguration = try CodexConfigProjector().project(
+            original: "# Needs a catalog pair\n",
+            profile: restoreProfile
+        )
+        let backupsURL = configDirectoryURL.appendingPathComponent("backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
+        let selectedBackupURL = backupsURL.appendingPathComponent(
+            "config.toml.backup-20260304T050607.009Z"
+        )
+        try Data(selectedConfiguration.utf8).write(to: selectedBackupURL)
+
+        let adapter = CodexClientAdapter(configURL: configURL, credentialStore: FakeCredentialStore())
+        XCTAssertThrowsError(
+            try adapter.restoreConfigurationBackup(at: selectedBackupURL)
+        ) { error in
+            XCTAssertEqual(error as? CodexSwitchError, .backupUnavailable)
+        }
+        XCTAssertEqual(try Data(contentsOf: configURL), Data(currentConfiguration.utf8))
+        XCTAssertEqual(try Data(contentsOf: catalogURL), currentCatalog)
+    }
+
+    func testManualRestoreRollsBackCatalogWhenConfigurationWriteFails() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let configDirectoryURL = configURL.deletingLastPathComponent()
+        let catalogURL = configDirectoryURL.appendingPathComponent(CodexModelCatalog.filename)
+        let currentConfiguration = "approval_policy = \"on-request\"\n"
+        let currentCatalog = try CodexModelCatalog.make(
+            for: makeProfile(presetID: .openRouter, model: "vendor/current-model")
+        ).encodedData()
+        try Data(currentConfiguration.utf8).write(to: configURL)
+        try currentCatalog.write(to: catalogURL)
+
+        let backupsURL = configDirectoryURL.appendingPathComponent("backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
+        let selectedBackupURL = backupsURL.appendingPathComponent(
+            "config.toml.backup-20260304T050607.011Z"
+        )
+        try Data("approval_policy = \"never\"\n".utf8).write(to: selectedBackupURL)
+
+        let interceptor = OneShotConfigurationWriteFailure(configURL: configURL)
+        let adapter = CodexClientAdapter(
+            configURL: configURL,
+            credentialStore: FakeCredentialStore(),
+            projector: CodexConfigProjector(),
+            bridgeManager: FakeBridgeManager(),
+            atomicWriteInterceptor: interceptor
+        )
+        XCTAssertThrowsError(
+            try adapter.restoreConfigurationBackup(at: selectedBackupURL)
+        ) { error in
+            XCTAssertEqual(error as? CodexSwitchError, .unableToWriteConfiguration)
+        }
+        XCTAssertEqual(try Data(contentsOf: configURL), Data(currentConfiguration.utf8))
+        XCTAssertEqual(try Data(contentsOf: catalogURL), currentCatalog)
+    }
+
+    func testManualRestoreLeavesExternalCatalogUntouchedAndUndoRestoresOwnedCatalog() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let configDirectoryURL = configURL.deletingLastPathComponent()
+        let catalogURL = configDirectoryURL.appendingPathComponent(CodexModelCatalog.filename)
+        let externalCatalogURL = configDirectoryURL.appendingPathComponent("external-models.json")
+        let currentConfiguration = "approval_policy = \"on-request\"\n"
+        let currentCatalog = try CodexModelCatalog.make(
+            for: makeProfile(presetID: .openRouter, model: "vendor/current-model")
+        ).encodedData()
+        let externalCatalog = Data("{\"models\":[\"external\"]}".utf8)
+        try Data(currentConfiguration.utf8).write(to: configURL)
+        try currentCatalog.write(to: catalogURL)
+        try externalCatalog.write(to: externalCatalogURL)
+
+        let backupsURL = configDirectoryURL.appendingPathComponent("backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: backupsURL, withIntermediateDirectories: true)
+        let selectedBackupURL = backupsURL.appendingPathComponent(
+            "config.toml.backup-20260304T050607.010Z"
+        )
+        let externalPointerConfiguration = """
+        approval_policy = "never"
+        model_catalog_json = "external-models.json"
+        """
+        try Data(externalPointerConfiguration.utf8).write(to: selectedBackupURL)
+
+        let adapter = CodexClientAdapter(configURL: configURL, credentialStore: FakeCredentialStore())
+        let receipt = try adapter.restoreConfigurationBackup(at: selectedBackupURL)
+        XCTAssertEqual(
+            try String(contentsOf: configURL, encoding: .utf8),
+            externalPointerConfiguration
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: catalogURL.path))
+        XCTAssertEqual(try Data(contentsOf: externalCatalogURL), externalCatalog)
+        XCTAssertFalse(receipt.catalogAfterExisted)
+
+        try adapter.undo(receipt)
+        XCTAssertEqual(try Data(contentsOf: configURL), Data(currentConfiguration.utf8))
+        XCTAssertEqual(try Data(contentsOf: catalogURL), currentCatalog)
+        XCTAssertEqual(try Data(contentsOf: externalCatalogURL), externalCatalog)
     }
 
     func testProfileRepositoryRoundTripsMetadataWithoutCredentials() async throws {
@@ -1275,6 +1592,15 @@ final class CodexCoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         return directoryURL
     }
+
+    private func makeCodexConfigurationURL(in directoryURL: URL) throws -> URL {
+        let configDirectoryURL = directoryURL.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: configDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        return configDirectoryURL.appendingPathComponent("config.toml")
+    }
 }
 
 private final class FakeCredentialStore: CredentialStoring {
@@ -1326,4 +1652,28 @@ private struct NoopClientAdapter: ClientAdapter {
     }
 
     func undo(_ receipt: SwitchReceipt) throws {}
+}
+
+private final class OneShotConfigurationWriteFailure: CodexAtomicWriteIntercepting {
+    private let configURL: URL
+    private var shouldFail = true
+
+    init(configURL: URL) {
+        self.configURL = configURL.standardizedFileURL
+    }
+
+    func willWriteAtomically(to destination: URL) throws {
+        guard
+            shouldFail,
+            destination.standardizedFileURL == configURL
+        else {
+            return
+        }
+        shouldFail = false
+        throw TestAtomicWriteError.intentionalFailure
+    }
+}
+
+private enum TestAtomicWriteError: Error {
+    case intentionalFailure
 }

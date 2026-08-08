@@ -7,12 +7,6 @@ struct ProfileEditorView: View {
 
     var body: some View {
         Form {
-            if appState.restartRequired {
-                Section {
-                    RestartRequiredBanner()
-                }
-            }
-
             Section("Profile") {
                 TextField("Name", text: $draft.name)
                     .textFieldStyle(.roundedBorder)

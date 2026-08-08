@@ -125,6 +125,23 @@ bridge 只轉送 Codex 已取得的 bearer credential。這個安全邊界也表
    `/status` 查看目前 route、provider 或 session 狀態。CLI 正常而 Desktop
    不顯示時，通常就是 Desktop login gating。
 
+## 設定復原與 persistent Undo
+
+- 每次 Apply 成功後，App 會把不含秘密的 switch receipt 寫入最多 20 筆的
+  persistent Undo journal；重新開啟 App 後仍可從 Undo 使用最新一筆。Undo
+  成功後會移除該筆 journal entry。
+- Toolbar 的 **Restore Backup** 會列出 App 建立的 config backup inventory，
+  只顯示時間與檔案大小，並在第二步確認後復原 `config.toml` 與
+  app-owned model catalog。Restore 成功後會產生新的 receipt，也能再 Undo。
+- Restore 不會遷移或重寫 Codex 的 sessions、history、auth 或 state database，
+  也不會複製或刪除約 20GB 的 session data。完成 Apply、Undo 或 Restore 後，
+  都必須完全退出並重新啟動 Codex。
+- 原始 config restore 後，若 config provider bucket 已返回，Codex Desktop
+  的 sessions 可能會在重啟後重新出現；App 不會自動改寫任何 history metadata。
+  history bucket restoration 仍是未來另行 opt-in 的功能。
+- config restore 已由 App 的 backup inventory 與安全確認流程提供，不再需要
+  手動輸入指令；history restoration 仍維持獨立的未來 opt-in 範圍。
+
 ## 安全模型
 
 - API key 由 Core 的 `CredentialStoring` / `KeychainCredentialStore` 管理，
