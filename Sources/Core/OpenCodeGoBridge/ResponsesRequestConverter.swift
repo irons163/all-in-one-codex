@@ -12,6 +12,7 @@ public enum OpenCodeGoResponsesRequestConverter {
         }
 
         let model = try supportedChatModel(from: root)
+        let isDeepSeekV4 = isDeepSeekV4Model(model)
         let stream = (root["stream"] as? Bool) ?? true
         let inputItems = root["input"] as? [[String: Any]]
         let outputMode: OpenCodeGoResponsesOutputMode = inputItems?.contains(where: isCompactionTrigger) == true
@@ -37,7 +38,8 @@ public enum OpenCodeGoResponsesRequestConverter {
                 assistantToolCallMessage(
                     cachedHistory.toolCalls,
                     reasoningContent: cachedHistory.reasoningContent,
-                    reasoningContentPresent: cachedHistory.reasoningContentPresent
+                    reasoningContentPresent: cachedHistory.reasoningContentPresent,
+                    requiresDeepSeekAssistantFields: isDeepSeekV4
                 )
             )
         }
@@ -50,7 +52,8 @@ public enum OpenCodeGoResponsesRequestConverter {
                     from: inputItem,
                     systemMessages: &systemMessages,
                     conversationMessages: &conversationMessages,
-                    toolContext: toolConversion.context
+                    toolContext: toolConversion.context,
+                    isDeepSeekV4: isDeepSeekV4
                 )
             }
             if previousResponseID != nil,
@@ -99,6 +102,9 @@ public enum OpenCodeGoResponsesRequestConverter {
                 chatRequest[key] = value
             }
         }
+        if isDeepSeekV4, let thinking = deepSeekThinking(from: root) {
+            chatRequest["thinking"] = thinking
+        }
 
         guard JSONSerialization.isValidJSONObject(chatRequest) else {
             throw OpenCodeGoBridgeError.invalidRequest
@@ -129,11 +135,33 @@ public enum OpenCodeGoResponsesRequestConverter {
         return model
     }
 
+    private static func isDeepSeekV4Model(_ model: String) -> Bool {
+        model.lowercased().contains("deepseek-v4")
+    }
+
+    private static func deepSeekThinking(from root: [String: Any]) -> [String: String]? {
+        guard let effort = deepSeekReasoningEffort(from: root) else {
+            return nil
+        }
+        let type = ["none", "off", "disabled"].contains(effort) ? "disabled" : "enabled"
+        return ["type": type]
+    }
+
+    private static func deepSeekReasoningEffort(from root: [String: Any]) -> String? {
+        if let reasoning = root["reasoning"] as? [String: Any],
+           let effort = trimmedString(reasoning["effort"])
+        {
+            return effort.lowercased()
+        }
+        return trimmedString(root["reasoning_effort"])?.lowercased()
+    }
+
     private static func appendChatMessages(
         from inputItem: [String: Any],
         systemMessages: inout [[String: Any]],
         conversationMessages: inout [[String: Any]],
-        toolContext: OpenCodeGoToolContext
+        toolContext: OpenCodeGoToolContext,
+        isDeepSeekV4: Bool
     ) throws {
         let type = inputItem["type"] as? String
         if type == "compaction_trigger" {
@@ -184,7 +212,8 @@ public enum OpenCodeGoResponsesRequestConverter {
                 assistantToolCallMessage(
                     [toolCall],
                     reasoningContent: reasoning.content,
-                    reasoningContentPresent: reasoning.isPresent
+                    reasoningContentPresent: reasoning.isPresent,
+                    requiresDeepSeekAssistantFields: isDeepSeekV4
                 )
             )
             return
@@ -199,15 +228,21 @@ public enum OpenCodeGoResponsesRequestConverter {
         var message: [String: Any] = ["role": role]
         if let content = convertedContent.content {
             message["content"] = content
-        } else if role != "assistant" {
+        } else if role != "assistant" || isDeepSeekV4 {
             message["content"] = ""
         }
         if role == "assistant", !convertedContent.toolCalls.isEmpty {
             message["tool_calls"] = convertedContent.toolCalls.map(chatToolCallObject)
         }
         if role == "assistant" {
-            let reasoning = inputReasoningContent(from: inputItem)
-            if reasoning.isPresent {
+            let topLevelReasoning = inputReasoningContent(from: inputItem)
+            let reasoning = topLevelReasoning.isPresent
+                ? topLevelReasoning
+                : (
+                    content: convertedContent.reasoningContent,
+                    isPresent: convertedContent.reasoningContentPresent
+                )
+            if reasoning.isPresent || isDeepSeekV4 {
                 message["reasoning_content"] = reasoning.content ?? ""
             }
         }
@@ -228,25 +263,37 @@ public enum OpenCodeGoResponsesRequestConverter {
     private static func chatContent(
         from rawContent: Any?,
         toolContext: OpenCodeGoToolContext
-    ) -> (content: Any?, toolCalls: [OpenCodeGoToolCall]) {
+    ) -> (
+        content: Any?,
+        toolCalls: [OpenCodeGoToolCall],
+        reasoningContent: String?,
+        reasoningContentPresent: Bool
+    ) {
         guard let rawContent else {
-            return (nil, [])
+            return (nil, [], nil, false)
         }
         if let content = rawContent as? String {
-            return (content, [])
+            return (content, [], nil, false)
         }
         guard let parts = rawContent as? [[String: Any]] else {
-            return (stringValue(rawContent), [])
+            return (stringValue(rawContent), [], nil, false)
         }
 
         var convertedParts: [[String: Any]] = []
         var toolCalls: [OpenCodeGoToolCall] = []
+        var reasoningParts: [String] = []
+        var reasoningContentPresent = false
         for part in parts {
             let type = part["type"] as? String
             if (type == "function_call" || type == "custom_tool_call"),
                let toolCall = toolCall(from: part, toolContext: toolContext, kind: type)
             {
                 toolCalls.append(toolCall)
+                continue
+            }
+            if isReasoningContentPart(type) {
+                reasoningContentPresent = true
+                reasoningParts.append(reasoningContent(from: part) ?? "")
                 continue
             }
             switch type {
@@ -276,7 +323,61 @@ public enum OpenCodeGoResponsesRequestConverter {
                 }
             }
         }
-        return (convertedParts.isEmpty ? nil : convertedParts, toolCalls)
+        return (
+            convertedParts.isEmpty ? nil : convertedParts,
+            toolCalls,
+            reasoningContentPresent ? reasoningParts.joined() : nil,
+            reasoningContentPresent
+        )
+    }
+
+    private static func isReasoningContentPart(_ type: String?) -> Bool {
+        guard let type = type?.lowercased() else {
+            return false
+        }
+        return type == "thinking" || type == "reasoning" || type.hasPrefix("reasoning_")
+    }
+
+    /// A Responses history can carry reasoning as a structured content part.
+    /// Chat Completions accepts it only as a string field, so prefer textual
+    /// fields and losslessly serialize unfamiliar structures as a fallback.
+    private static func reasoningContent(from part: [String: Any]) -> String? {
+        for key in [
+            "reasoning_content",
+            "reasoning",
+            "reasoning_text",
+            "text",
+            "content",
+            "value",
+            "summary"
+        ] {
+            if let value = part[key], let reasoning = serializedReasoningContent(value) {
+                return reasoning
+            }
+        }
+        return stringValue(part)
+    }
+
+    private static func serializedReasoningContent(_ value: Any) -> String? {
+        if let string = value as? String {
+            return string
+        }
+        if let parts = value as? [[String: Any]] {
+            let textParts = parts.compactMap {
+                stringValue(
+                    $0["reasoning_content"]
+                        ?? $0["reasoning"]
+                        ?? $0["reasoning_text"]
+                        ?? $0["text"]
+                        ?? $0["content"]
+                        ?? $0["value"]
+                )
+            }
+            if !textParts.isEmpty {
+                return textParts.joined()
+            }
+        }
+        return stringValue(value)
     }
 
     private static func normalizedImageURL(from value: Any?) -> [String: Any]? {
@@ -499,11 +600,15 @@ public enum OpenCodeGoResponsesRequestConverter {
     private static func assistantToolCallMessage(
         _ toolCalls: [OpenCodeGoToolCall],
         reasoningContent: String?,
-        reasoningContentPresent: Bool = false
+        reasoningContentPresent: Bool = false,
+        requiresDeepSeekAssistantFields: Bool = false
     ) -> [String: Any] {
         var message: [String: Any] = ["role": "assistant"]
+        if requiresDeepSeekAssistantFields {
+            message["content"] = ""
+        }
         if !toolCalls.isEmpty { message["tool_calls"] = toolCalls.map(chatToolCallObject) }
-        if reasoningContentPresent || reasoningContent != nil {
+        if reasoningContentPresent || reasoningContent != nil || requiresDeepSeekAssistantFields {
             message["reasoning_content"] = reasoningContent ?? ""
         }
         return message

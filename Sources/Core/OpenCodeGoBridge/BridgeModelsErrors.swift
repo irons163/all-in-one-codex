@@ -44,6 +44,7 @@ public enum OpenCodeGoBridgeError: LocalizedError, Equatable, Sendable {
     case unsupportedModel
     case missingAuthorization
     case missingProviderCredential
+    case sessionRequestLimitReached
     case upstreamUnavailable
     case upstreamRejected
     case invalidUpstreamResponse
@@ -70,6 +71,8 @@ public enum OpenCodeGoBridgeError: LocalizedError, Equatable, Sendable {
             return "The bridge request did not include provider authorization."
         case .missingProviderCredential:
             return "The bridge has no active provider credential."
+        case .sessionRequestLimitReached:
+            return "The bridge has reached its active session request limit."
         case .upstreamUnavailable:
             return "OpenCode Go is temporarily unavailable."
         case .upstreamRejected:
@@ -97,16 +100,13 @@ public struct OpenCodeGoNormalizedError: Equatable, Sendable {
 public enum OpenCodeGoBridgeErrorNormalizer {
     public static func normalize(
         _ error: Error,
-        upstreamStatusCode: Int? = nil
+        upstreamStatusCode: Int? = nil,
+        upstreamErrorBody: Data? = nil
     ) -> OpenCodeGoNormalizedError {
         if let upstreamStatusCode {
             switch upstreamStatusCode {
             case 400:
-                return OpenCodeGoNormalizedError(
-                    statusCode: 400,
-                    code: "upstream_invalid_request",
-                    message: "OpenCode Go rejected the converted request."
-                )
+                return normalizedInvalidUpstreamRequest(from: upstreamErrorBody)
             case 401:
                 return OpenCodeGoNormalizedError(
                     statusCode: 401,
@@ -203,6 +203,12 @@ public enum OpenCodeGoBridgeErrorNormalizer {
                 code: "missing_provider_credential",
                 message: "The bridge has no active provider credential."
             )
+        case .sessionRequestLimitReached:
+            return OpenCodeGoNormalizedError(
+                statusCode: 503,
+                code: "bridge_session_request_limit",
+                message: "The bridge has reached its active session request limit."
+            )
         case .portInUse:
             return OpenCodeGoNormalizedError(
                 statusCode: 503,
@@ -234,6 +240,233 @@ public enum OpenCodeGoBridgeErrorNormalizer {
                 message: "OpenCode Go returned an unsupported Chat Completions response."
             )
         }
+    }
+
+    /// Reads only the standard JSON error fields needed for a fixed,
+    /// non-sensitive classification. The upstream response itself is never
+    /// retained or reflected into an error returned to Codex.
+    private static func normalizedInvalidUpstreamRequest(
+        from upstreamErrorBody: Data?
+    ) -> OpenCodeGoNormalizedError {
+        let fields = upstreamErrorFields(from: upstreamErrorBody)
+        if matchesReasoningContentRequirement(fields) {
+            return OpenCodeGoNormalizedError(
+                statusCode: 400,
+                code: "upstream_reasoning_content_required",
+                message: "OpenCode Go requires reasoning content for this request."
+            )
+        }
+        if matchesUnsupportedParameterOrToolSchema(fields) {
+            return OpenCodeGoNormalizedError(
+                statusCode: 400,
+                code: "upstream_unsupported_parameter_or_tool_schema",
+                message: "OpenCode Go rejected an unsupported parameter or tool schema."
+            )
+        }
+        return OpenCodeGoNormalizedError(
+            statusCode: 400,
+            code: "upstream_invalid_request",
+            message: "OpenCode Go rejected the converted request."
+        )
+    }
+
+    private static func upstreamErrorFields(
+        from upstreamErrorBody: Data?
+    ) -> OpenCodeGoUpstreamErrorFields? {
+        // A bounded parse prevents an error payload from becoming a memory
+        // amplification path. The fields are used only for classification.
+        guard
+            let upstreamErrorBody,
+            upstreamErrorBody.count <= 64 * 1024,
+            let object = try? JSONSerialization.jsonObject(with: upstreamErrorBody),
+            let root = object as? [String: Any],
+            let error = root["error"] as? [String: Any]
+        else {
+            return nil
+        }
+        return OpenCodeGoUpstreamErrorFields(
+            message: error["message"] as? String,
+            type: error["type"] as? String,
+            code: error["code"] as? String,
+            param: error["param"] as? String
+        )
+    }
+
+    private static func matchesReasoningContentRequirement(
+        _ fields: OpenCodeGoUpstreamErrorFields?
+    ) -> Bool {
+        let values = fields?.normalizedValues ?? []
+        let mentionsReasoningContent = values.contains {
+            $0.contains("reasoning_content") || $0.contains("reasoning content")
+        }
+        let requirementMarkers = [
+            "required",
+            "missing",
+            "must include",
+            "must be included",
+            "must provide",
+            "must be provided",
+            "not provided"
+        ]
+        return mentionsReasoningContent && values.contains { value in
+            requirementMarkers.contains { value.contains($0) }
+        }
+    }
+
+    private static func matchesUnsupportedParameterOrToolSchema(
+        _ fields: OpenCodeGoUpstreamErrorFields?
+    ) -> Bool {
+        let values = fields?.normalizedValues ?? []
+        let unsupportedMarkers = [
+            "unsupported parameter",
+            "unknown parameter",
+            "unrecognized parameter",
+            "invalid parameter",
+            "unknown field",
+            "unrecognized field",
+            "additional property",
+            "unsupported tool",
+            "tool schema",
+            "function schema",
+            "invalid schema",
+            "schema validation",
+            "unsupported_parameter",
+            "unsupported_tool",
+            "invalid_tool_schema"
+        ]
+        guard values.contains(where: { value in
+            unsupportedMarkers.contains { value.contains($0) }
+        }) else {
+            return false
+        }
+
+        // The marker alone is sufficient for an explicit unsupported
+        // parameter or schema error. `param` remains useful for providers
+        // that put the tool field there and a shorter marker in `code`.
+        return true
+    }
+}
+
+private struct OpenCodeGoUpstreamErrorFields {
+    let message: String?
+    let type: String?
+    let code: String?
+    let param: String?
+
+    var normalizedValues: [String] {
+        [message, type, code, param].compactMap {
+            $0?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+        }.filter { !$0.isEmpty }
+    }
+}
+
+/// Serializes only requests that identify the same Codex session. A slot is
+/// discarded as soon as its active request and waiters finish, so the
+/// coordinator never retains request bodies, credentials, or idle sessions.
+public actor OpenCodeGoSessionRequestCoordinator {
+    private struct Slot {
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let capacity: Int
+    private let maximumWaitersPerSession: Int
+    private let maximumSessionKeyLength: Int
+    private var slots: [String: Slot] = [:]
+
+    /// `capacity` bounds simultaneously tracked active session keys. Requests
+    /// for an admitted session always preserve their ordering. Requests above
+    /// either bound are rejected by `perform(for:operation:)` rather than
+    /// retaining an unbounded backlog.
+    public init(
+        capacity: Int = 128,
+        maximumWaitersPerSession: Int = 64,
+        maximumSessionKeyLength: Int = 256
+    ) {
+        self.capacity = max(1, capacity)
+        self.maximumWaitersPerSession = max(1, maximumWaitersPerSession)
+        self.maximumSessionKeyLength = max(16, maximumSessionKeyLength)
+    }
+
+    /// Runs the operation in a serial slot for a non-empty session key. A
+    /// missing or oversized key intentionally receives no shared slot so each
+    /// otherwise-unidentified request remains independent. Returns `false`
+    /// only when the bounded active-session or per-session queue limit is hit.
+    public func perform(
+        for sessionKey: String?,
+        operation: @escaping @Sendable () async -> Void
+    ) async -> Bool {
+        guard let key = normalizedSessionKey(sessionKey) else {
+            await operation()
+            return true
+        }
+        guard await acquire(key) else {
+            return false
+        }
+        await operation()
+        release(key)
+        return true
+    }
+
+    /// Test-only visibility through `@testable`; the count never includes
+    /// completed sessions because their slots are removed in `release(_:)`.
+    func queuedRequestCount(for sessionKey: String) -> Int {
+        guard let key = normalizedSessionKey(sessionKey) else {
+            return 0
+        }
+        return slots[key]?.waiters.count ?? 0
+    }
+
+    func trackedSessionCount() -> Int {
+        slots.count
+    }
+
+    private func acquire(_ key: String) async -> Bool {
+        if var slot = slots[key] {
+            guard slot.waiters.count < maximumWaitersPerSession else {
+                return false
+            }
+            await withCheckedContinuation { continuation in
+                slot.waiters.append(continuation)
+                slots[key] = slot
+            }
+            return true
+        }
+
+        guard slots.count < capacity else {
+            return false
+        }
+        slots[key] = Slot()
+        return true
+    }
+
+    private func release(_ key: String) {
+        guard var slot = slots[key] else {
+            return
+        }
+        if !slot.waiters.isEmpty {
+            let next = slot.waiters.removeFirst()
+            slots[key] = slot
+            next.resume()
+            return
+        }
+
+        slots.removeValue(forKey: key)
+    }
+
+    private func normalizedSessionKey(_ sessionKey: String?) -> String? {
+        guard let sessionKey else {
+            return nil
+        }
+        let key = sessionKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            !key.isEmpty,
+            key.utf8.count <= maximumSessionKeyLength
+        else {
+            return nil
+        }
+        return key
     }
 }
 

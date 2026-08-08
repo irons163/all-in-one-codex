@@ -51,17 +51,20 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGo
     private let port: UInt16
     private let transport: any OpenCodeGoBridgeTransport
     private let toolCallCache: OpenCodeGoToolCallCache
+    private let sessionRequestCoordinator: OpenCodeGoSessionRequestCoordinator
     private var server: OpenCodeGoLoopbackHTTPServer?
     private var routingMode: OpenCodeGoBridgeRoutingMode = .legacyChat
 
     public init(
         port: UInt16 = OpenCodeGoBridgeManager.port,
         transport: any OpenCodeGoBridgeTransport = URLSessionOpenCodeGoBridgeTransport(),
-        toolCallCache: OpenCodeGoToolCallCache = OpenCodeGoToolCallCache()
+        toolCallCache: OpenCodeGoToolCallCache = OpenCodeGoToolCallCache(),
+        sessionRequestCoordinator: OpenCodeGoSessionRequestCoordinator = OpenCodeGoSessionRequestCoordinator()
     ) {
         self.port = port
         self.transport = transport
         self.toolCallCache = toolCallCache
+        self.sessionRequestCoordinator = sessionRequestCoordinator
     }
 
     public var status: OpenCodeGoBridgeStatus {
@@ -88,6 +91,7 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGo
         let handler = OpenCodeGoBridgeRequestHandler(
             transport: transport,
             toolCallCache: toolCallCache,
+            sessionRequestCoordinator: sessionRequestCoordinator,
             routingModeProvider: { [weak self] in
                 self?.routingModeSnapshot() ?? .legacyChat
             }
@@ -157,7 +161,7 @@ private struct OpenCodeGoBridgePreservation: Sendable {
     let credential: Data
 }
 
-private struct OpenCodeGoBridgeHTTPRequest {
+private struct OpenCodeGoBridgeHTTPRequest: Sendable {
     let method: String
     let path: String
     let headers: [String: String]
@@ -221,11 +225,13 @@ private struct OpenCodeGoBridgeHTTPResponse: Sendable {
 
     static func normalizedError(
         _ error: Error,
-        upstreamStatusCode: Int
+        upstreamStatusCode: Int,
+        upstreamErrorBody: Data? = nil
     ) -> OpenCodeGoBridgeHTTPResponse {
         let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
             error,
-            upstreamStatusCode: upstreamStatusCode
+            upstreamStatusCode: upstreamStatusCode,
+            upstreamErrorBody: upstreamErrorBody
         )
         let object: [String: Any] = [
             "error": [
@@ -311,18 +317,33 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
         "content-encoding",
         "content-type"
     ]
+    /// Ordered from the most explicit inbound session identifiers to broader
+    /// compatibility aliases. Request parsing lowercases header names.
+    private static let sessionHeaderNames = [
+        "session-id",
+        "thread-id",
+        "x-codex-thread-id",
+        "x-session-id",
+        "x-thread-id",
+        "x-codex-session-id",
+        "x-openai-thread-id",
+        "openai-thread-id"
+    ]
 
     private let transport: any OpenCodeGoBridgeTransport
     private let toolCallCache: OpenCodeGoToolCallCache
+    private let sessionRequestCoordinator: OpenCodeGoSessionRequestCoordinator
     private let routingModeProvider: @Sendable () -> OpenCodeGoBridgeRoutingMode
 
     init(
         transport: any OpenCodeGoBridgeTransport,
         toolCallCache: OpenCodeGoToolCallCache,
+        sessionRequestCoordinator: OpenCodeGoSessionRequestCoordinator,
         routingModeProvider: @escaping @Sendable () -> OpenCodeGoBridgeRoutingMode
     ) {
         self.transport = transport
         self.toolCallCache = toolCallCache
+        self.sessionRequestCoordinator = sessionRequestCoordinator
         self.routingModeProvider = routingModeProvider
     }
 
@@ -369,37 +390,58 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
             return
         }
 
+        let sessionKey = Self.sessionKey(for: request)
+        let coordinator = sessionRequestCoordinator
+        Task { [weak self, coordinator] in
+            let admitted = await coordinator.perform(for: sessionKey) { [weak self] in
+                guard let self else {
+                    completion(.normalizedError(OpenCodeGoBridgeError.upstreamUnavailable))
+                    return
+                }
+                completion(
+                    await self.handleAuthorizedRequest(
+                        request,
+                        authorization: authorization
+                    )
+                )
+            }
+            if !admitted {
+                completion(.normalizedError(OpenCodeGoBridgeError.sessionRequestLimitReached))
+            }
+        }
+    }
+
+    private func handleAuthorizedRequest(
+        _ request: OpenCodeGoBridgeHTTPRequest,
+        authorization: String
+    ) async -> OpenCodeGoBridgeHTTPResponse {
         switch routingModeProvider() {
         case .legacyChat:
             // Legacy custom-provider mode keeps the existing contract: Codex
             // supplies the Keychain-backed bearer through auth.command and
             // the bridge converts only Chat Completions models.
-            handleChatRequest(
+            return await handleChatRequest(
                 request,
                 upstreamURL: Self.legacyChatUpstreamURL,
-                authorization: authorization,
-                completion: completion
+                authorization: authorization
             )
         case .preservingSessions(let preservation):
             // Deliberately do not pass the inbound official OAuth bearer into
             // this branch. It proves a local Codex caller is present, but the
             // selected profile's Keychain credential is the only upstream auth.
-            handlePreservingSessions(
+            return await handlePreservingSessions(
                 request,
-                preservation: preservation,
-                completion: completion
+                preservation: preservation
             )
         }
     }
 
     private func handlePreservingSessions(
         _ request: OpenCodeGoBridgeHTTPRequest,
-        preservation: OpenCodeGoBridgePreservation,
-        completion: @escaping @Sendable (OpenCodeGoBridgeHTTPResponse) -> Void
-    ) {
+        preservation: OpenCodeGoBridgePreservation
+    ) async -> OpenCodeGoBridgeHTTPResponse {
         guard let authorization = Self.providerAuthorization(from: preservation.credential) else {
-            completion(.normalizedError(OpenCodeGoBridgeError.missingProviderCredential))
-            return
+            return .normalizedError(OpenCodeGoBridgeError.missingProviderCredential)
         }
 
         switch preservation.route.upstreamWireAPI {
@@ -408,24 +450,21 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
                 baseURL: preservation.route.upstreamBaseURL,
                 relativePath: "chat/completions"
             ) else {
-                completion(.normalizedError(OpenCodeGoBridgeError.upstreamUnavailable))
-                return
+                return .normalizedError(OpenCodeGoBridgeError.upstreamUnavailable)
             }
-            handleChatRequest(
+            return await handleChatRequest(
                 request,
                 upstreamURL: upstreamURL,
-                authorization: authorization,
-                completion: completion
+                authorization: authorization
             )
         case .responses:
-            handleResponsesPassthrough(
+            return await handleResponsesPassthrough(
                 request,
                 route: preservation.route,
-                authorization: authorization,
-                completion: completion
+                authorization: authorization
             )
         case .anthropicMessages:
-            completion(.normalizedError(OpenCodeGoBridgeError.invalidRequest))
+            return .normalizedError(OpenCodeGoBridgeError.invalidRequest)
         }
     }
 
@@ -434,9 +473,8 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
     private func handleChatRequest(
         _ request: OpenCodeGoBridgeHTTPRequest,
         upstreamURL: URL,
-        authorization: String,
-        completion: @escaping @Sendable (OpenCodeGoBridgeHTTPResponse) -> Void
-    ) {
+        authorization: String
+    ) async -> OpenCodeGoBridgeHTTPResponse {
         // Chat conversion must inspect the JSON body locally. Responses
         // passthrough requests, in contrast, can preserve Codex's zstd body
         // and Content-Encoding header without decoding it in the bridge.
@@ -444,8 +482,7 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
            !encoding.isEmpty,
            encoding.lowercased() != "identity"
         {
-            completion(.normalizedError(OpenCodeGoBridgeError.unsupportedContentEncoding))
-            return
+            return .normalizedError(OpenCodeGoBridgeError.unsupportedContentEncoding)
         }
 
         let converted: OpenCodeGoChatRequestConversion
@@ -455,8 +492,7 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
                 toolCallCache: toolCallCache
             )
         } catch {
-            completion(.normalizedError(error))
-            return
+            return .normalizedError(error)
         }
 
         var upstreamRequest = URLRequest(url: upstreamURL)
@@ -467,62 +503,56 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
         upstreamRequest.setValue("text/event-stream, application/json", forHTTPHeaderField: "Accept")
         upstreamRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
 
-        Task { [transport, toolCallCache] in
-            do {
-                let upstream = try await transport.execute(upstreamRequest)
-                guard (200..<300).contains(upstream.statusCode) else {
-                    let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
-                        OpenCodeGoBridgeError.upstreamRejected,
-                        upstreamStatusCode: upstream.statusCode
-                    )
-                    completion(
-                        .sse(
-                            statusCode: normalized.statusCode,
-                            body: OpenCodeGoResponsesEventEncoder.failure(
-                                responseID: "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
-                                model: converted.model,
-                                normalizedError: normalized
-                            )
-                        )
-                    )
-                    return
-                }
-
-                let conversion = try OpenCodeGoChatResponseConverter.convert(
-                    chatResponse: upstream.body,
-                    contentType: upstream.headers["content-type"],
-                    fallbackModel: converted.model,
-                    toolContext: converted.toolContext,
-                    outputMode: converted.outputMode
+        do {
+            let upstream = try await transport.execute(upstreamRequest)
+            guard (200..<300).contains(upstream.statusCode) else {
+                let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+                    OpenCodeGoBridgeError.upstreamRejected,
+                    upstreamStatusCode: upstream.statusCode,
+                    upstreamErrorBody: upstream.body
                 )
-                toolCallCache.store(
-                    responseID: conversion.responseID,
-                    toolCalls: conversion.toolCalls,
-                    reasoningContent: conversion.reasoningContent
-                )
-                completion(.sse(body: conversion.sse))
-            } catch {
-                let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(error)
-                completion(
-                    .sse(
-                        statusCode: normalized.statusCode,
-                        body: OpenCodeGoResponsesEventEncoder.failure(
-                            responseID: "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
-                            model: converted.model,
-                            normalizedError: normalized
-                        )
+                return .sse(
+                    statusCode: normalized.statusCode,
+                    body: OpenCodeGoResponsesEventEncoder.failure(
+                        responseID: "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
+                        model: converted.model,
+                        normalizedError: normalized
                     )
                 )
             }
+
+            let conversion = try OpenCodeGoChatResponseConverter.convert(
+                chatResponse: upstream.body,
+                contentType: upstream.headers["content-type"],
+                fallbackModel: converted.model,
+                toolContext: converted.toolContext,
+                outputMode: converted.outputMode
+            )
+            toolCallCache.store(
+                responseID: conversion.responseID,
+                toolCalls: conversion.toolCalls,
+                reasoningContent: conversion.reasoningContent,
+                reasoningContentPresent: conversion.reasoningContentPresent
+            )
+            return .sse(body: conversion.sse)
+        } catch {
+            let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(error)
+            return .sse(
+                statusCode: normalized.statusCode,
+                body: OpenCodeGoResponsesEventEncoder.failure(
+                    responseID: "resp_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
+                    model: converted.model,
+                    normalizedError: normalized
+                )
+            )
         }
     }
 
     private func handleResponsesPassthrough(
         _ request: OpenCodeGoBridgeHTTPRequest,
         route: ProviderRoute,
-        authorization: String,
-        completion: @escaping @Sendable (OpenCodeGoBridgeHTTPResponse) -> Void
-    ) {
+        authorization: String
+    ) async -> OpenCodeGoBridgeHTTPResponse {
         guard
             let relativePath = OpenCodeGoBridgeRoute.upstreamResponsesPath(for: request.path),
             let upstreamURL = Self.upstreamURL(
@@ -530,8 +560,7 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
                 relativePath: relativePath
             )
         else {
-            completion(.normalizedError(OpenCodeGoBridgeError.invalidRequest))
-            return
+            return .normalizedError(OpenCodeGoBridgeError.invalidRequest)
         }
 
         var upstreamRequest = URLRequest(url: upstreamURL)
@@ -551,29 +580,60 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
         // incoming OAuth bearer is intentionally excluded from this request.
         upstreamRequest.setValue(authorization, forHTTPHeaderField: "Authorization")
 
-        Task { [transport] in
-            do {
-                let upstream = try await transport.execute(upstreamRequest)
-                guard (200..<300).contains(upstream.statusCode) else {
-                    completion(
-                        .normalizedError(
-                            OpenCodeGoBridgeError.upstreamRejected,
-                            upstreamStatusCode: upstream.statusCode
-                        )
-                    )
-                    return
-                }
-                completion(
-                    .upstream(
-                        statusCode: upstream.statusCode,
-                        headers: upstream.headers,
-                        body: upstream.body
-                    )
+        do {
+            let upstream = try await transport.execute(upstreamRequest)
+            guard (200..<300).contains(upstream.statusCode) else {
+                return .normalizedError(
+                    OpenCodeGoBridgeError.upstreamRejected,
+                    upstreamStatusCode: upstream.statusCode,
+                    upstreamErrorBody: upstream.body
                 )
-            } catch {
-                completion(.normalizedError(error))
             }
+            return .upstream(
+                statusCode: upstream.statusCode,
+                headers: upstream.headers,
+                body: upstream.body
+            )
+        } catch {
+            return .normalizedError(error)
         }
+    }
+
+    private static func sessionKey(for request: OpenCodeGoBridgeHTTPRequest) -> String? {
+        for headerName in sessionHeaderNames {
+            guard
+                let rawValue = request.headers[headerName],
+                let value = normalizedSessionIdentifier(rawValue)
+            else {
+                continue
+            }
+            return "header:\(headerName):\(value)"
+        }
+
+        let contentEncoding = request.headers["content-encoding"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? "identity"
+        guard
+            contentEncoding.isEmpty || contentEncoding == "identity",
+            let object = try? JSONSerialization.jsonObject(with: request.body),
+            let root = object as? [String: Any],
+            let previousResponseID = root["previous_response_id"] as? String,
+            let value = normalizedSessionIdentifier(previousResponseID)
+        else {
+            return nil
+        }
+        return "previous_response:\(value)"
+    }
+
+    private static func normalizedSessionIdentifier(_ value: String) -> String? {
+        let identifier = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            !identifier.isEmpty,
+            identifier.utf8.count <= 192
+        else {
+            return nil
+        }
+        return identifier
     }
 
     private static func providerAuthorization(from credential: Data) -> String? {

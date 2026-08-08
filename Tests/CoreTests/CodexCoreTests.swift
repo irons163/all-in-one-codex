@@ -1074,6 +1074,295 @@ final class CodexCoreTests: XCTestCase {
         )
     }
 
+    func testDeepSeekAssistantToolHistoryAddsEmptyContentAndReasoningContent() throws {
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "input": [[
+                "role": "assistant",
+                "content": [[
+                    "type": "function_call",
+                    "call_id": "call_lookup",
+                    "name": "lookup_weather",
+                    "arguments": "{\"city\":\"Taipei\"}"
+                ]]
+            ]]
+        ]
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request)
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let message = try XCTUnwrap(
+            (chat["messages"] as? [[String: Any]])?.first
+        )
+
+        XCTAssertEqual(message["role"] as? String, "assistant")
+        XCTAssertNotNil(message["tool_calls"] as? [[String: Any]])
+        XCTAssertTrue(message.keys.contains("content"))
+        XCTAssertEqual(message["content"] as? String, "")
+        XCTAssertTrue(message.keys.contains("reasoning_content"))
+        XCTAssertEqual(message["reasoning_content"] as? String, "")
+    }
+
+    func testDeepSeekFullAssistantHistoryExtractsContentPartReasoning() throws {
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "input": [[
+                "role": "assistant",
+                "content": [
+                    ["type": "reasoning", "text": "I should inspect the prior tool output."],
+                    ["type": "output_text", "text": "I found the result."]
+                ]
+            ]]
+        ]
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request)
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let message = try XCTUnwrap(
+            (chat["messages"] as? [[String: Any]])?.first
+        )
+        let content = try XCTUnwrap(message["content"] as? [[String: Any]])
+
+        XCTAssertEqual(
+            message["reasoning_content"] as? String,
+            "I should inspect the prior tool output."
+        )
+        XCTAssertEqual(content.map { $0["text"] as? String }, ["I found the result."])
+    }
+
+    func testDeepSeekStandaloneFunctionAndCustomCallsAddEmptyAssistantFields() throws {
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "input": [
+                [
+                    "type": "function_call",
+                    "call_id": "call_lookup",
+                    "name": "lookup_weather",
+                    "arguments": "{}"
+                ],
+                [
+                    "type": "custom_tool_call",
+                    "call_id": "call_custom_lookup",
+                    "name": "lookup_custom",
+                    "input": "weather"
+                ]
+            ]
+        ]
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request)
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+
+        XCTAssertEqual(messages.count, 2)
+        for message in messages {
+            XCTAssertEqual(message["role"] as? String, "assistant")
+            XCTAssertEqual(message["content"] as? String, "")
+            XCTAssertEqual(message["reasoning_content"] as? String, "")
+        }
+    }
+
+    func testGLMToolHistoryDoesNotFabricateContentOrReasoningContent() throws {
+        let request: [String: Any] = [
+            "model": "glm-5.2",
+            "input": [
+                [
+                    "role": "assistant",
+                    "content": [[
+                        "type": "function_call",
+                        "call_id": "call_message_lookup",
+                        "name": "lookup_weather",
+                        "arguments": "{}"
+                    ]]
+                ],
+                [
+                    "type": "function_call",
+                    "call_id": "call_standalone_lookup",
+                    "name": "lookup_weather",
+                    "arguments": "{}"
+                ]
+            ]
+        ]
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: request)
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+
+        XCTAssertEqual(messages.count, 2)
+        for message in messages {
+            XCTAssertFalse(message.keys.contains("content"))
+            XCTAssertFalse(message.keys.contains("reasoning_content"))
+        }
+    }
+
+    func testDeepSeekReasoningEffortMapsToThinking() throws {
+        let cases: [([String: Any], String)] = [
+            (["reasoning": ["effort": "none"]], "disabled"),
+            (["reasoning_effort": "high"], "enabled")
+        ]
+
+        for (settings, expectedThinkingType) in cases {
+            var request: [String: Any] = [
+                "model": "deepseek-v4-flash",
+                "input": "What is the weather?"
+            ]
+            settings.forEach { request[$0.key] = $0.value }
+
+            let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+                responseRequest: JSONSerialization.data(withJSONObject: request)
+            )
+            let chat = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+            )
+            let thinking = try XCTUnwrap(chat["thinking"] as? [String: Any])
+
+            XCTAssertEqual(thinking["type"] as? String, expectedThinkingType)
+            XCTAssertNil(chat["reasoning_effort"])
+            XCTAssertNil(chat["reasoning"])
+        }
+    }
+
+    func testGoalToolsRoundTripThroughDeepSeekToolHistory() throws {
+        let goalTools: [[String: Any]] = [
+            [
+                "type": "function",
+                "name": "get_goal",
+                "description": "Get the current goal.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [String: Any](),
+                    "required": [String](),
+                    "additionalProperties": false
+                ],
+                "strict": false
+            ],
+            [
+                "type": "function",
+                "name": "create_goal",
+                "description": "Create a goal.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "objective": ["type": "string"],
+                        "token_budget": ["type": "integer"]
+                    ],
+                    "required": ["objective"],
+                    "additionalProperties": false
+                ],
+                "strict": false
+            ],
+            [
+                "type": "function",
+                "name": "update_goal",
+                "description": "Update a goal.",
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "status": [
+                            "type": "string",
+                            "enum": ["complete", "blocked"]
+                        ]
+                    ],
+                    "required": ["status"],
+                    "additionalProperties": false
+                ],
+                "strict": false
+            ]
+        ]
+        let firstRequest: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "input": "Start the requested goal.",
+            "tools": goalTools,
+            "stream": true
+        ]
+
+        let firstConversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: firstRequest)
+        )
+        let firstChat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: firstConversion.body) as? [String: Any]
+        )
+        let convertedTools = try XCTUnwrap(firstChat["tools"] as? [[String: Any]])
+        XCTAssertEqual(convertedTools.count, goalTools.count)
+        for (index, convertedTool) in convertedTools.enumerated() {
+            let sourceTool = goalTools[index]
+            let function = try XCTUnwrap(convertedTool["function"] as? [String: Any])
+            let sourceParameters = try XCTUnwrap(sourceTool["parameters"] as? [String: Any])
+            let convertedParameters = try XCTUnwrap(function["parameters"] as? [String: Any])
+
+            XCTAssertEqual(convertedTool["type"] as? String, "function")
+            XCTAssertNil(convertedTool["name"])
+            XCTAssertEqual(function["name"] as? String, sourceTool["name"] as? String)
+            XCTAssertEqual(function["strict"] as? Bool, sourceTool["strict"] as? Bool)
+            XCTAssertEqual(
+                try JSONSerialization.data(withJSONObject: convertedParameters, options: [.sortedKeys]),
+                try JSONSerialization.data(withJSONObject: sourceParameters, options: [.sortedKeys])
+            )
+        }
+
+        let upstream = """
+        data: {"id":"chatcmpl_goal","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"reasoning_content":"","tool_calls":[{"index":0,"id":"call_goal","type":"function","function":{"name":"get_goal","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+
+        data: [DONE]
+
+        """
+        let responseConversion = try OpenCodeGoChatResponseConverter.convert(
+            chatResponse: Data(upstream.utf8),
+            contentType: "text/event-stream",
+            fallbackModel: "deepseek-v4-flash",
+            toolContext: firstConversion.toolContext
+        )
+        let cache = OpenCodeGoToolCallCache()
+        cache.store(
+            responseID: responseConversion.responseID,
+            toolCalls: responseConversion.toolCalls,
+            reasoningContent: responseConversion.reasoningContent,
+            reasoningContentPresent: responseConversion.reasoningContentPresent
+        )
+
+        let continuation: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "previous_response_id": responseConversion.responseID,
+            "input": [[
+                "type": "function_call_output",
+                "call_id": "call_goal",
+                "output": "{\"status\":\"active\"}"
+            ]],
+            "tools": goalTools,
+            "stream": true
+        ]
+        let continuationConversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: JSONSerialization.data(withJSONObject: continuation),
+            toolCallCache: cache
+        )
+        let continuationChat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: continuationConversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(
+            continuationChat["messages"] as? [[String: Any]]
+        )
+        let assistant = try XCTUnwrap(messages.first)
+        XCTAssertEqual(assistant["role"] as? String, "assistant")
+        XCTAssertEqual(assistant["content"] as? String, "")
+        XCTAssertTrue(assistant.keys.contains("reasoning_content"))
+        XCTAssertEqual(assistant["reasoning_content"] as? String, "")
+        XCTAssertEqual(messages.last?["role"] as? String, "tool")
+        XCTAssertEqual(messages.last?["tool_call_id"] as? String, "call_goal")
+    }
+
     func testConvertsTextSSEToResponsesTerminalSequence() throws {
         let upstream = """
         data: {"id":"chatcmpl_text","model":"glm-5.2","created":1700000000,"choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
@@ -1288,6 +1577,8 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(responseConversion.reasoningContent, "")
         XCTAssertTrue(responseConversion.reasoningContentPresent)
         XCTAssertTrue(cache.history(for: responseConversion.responseID)?.reasoningContentPresent == true)
+        XCTAssertTrue(messages[0].keys.contains("content"))
+        XCTAssertEqual(messages[0]["content"] as? String, "")
         XCTAssertTrue(messages[0].keys.contains("reasoning_content"))
         XCTAssertEqual(messages[0]["reasoning_content"] as? String, "")
     }
@@ -1469,6 +1760,114 @@ final class CodexCoreTests: XCTestCase {
         let events = String(data: failure, encoding: .utf8) ?? ""
         XCTAssertTrue(events.contains("event: response.failed"))
         XCTAssertFalse(events.contains("fixture-secret-must-not-leak"))
+    }
+
+    func testClassifiesReasoningContentRequirementWithoutLeakingUpstreamFields() {
+        let secret = "fixture-secret-reasoning-content"
+        let upstreamBody = Data(
+            """
+            {
+              "error": {
+                "message": "Missing required parameter: reasoning_content. \(secret)",
+                "type": "invalid_request_error",
+                "code": "missing_reasoning_content",
+                "param": "reasoning_content"
+              }
+            }
+            """.utf8
+        )
+
+        let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+            OpenCodeGoBridgeError.upstreamRejected,
+            upstreamStatusCode: 400,
+            upstreamErrorBody: upstreamBody
+        )
+        let failure = OpenCodeGoResponsesEventEncoder.failure(
+            responseID: "resp_fixture",
+            model: "deepseek-v4-flash",
+            normalizedError: normalized
+        )
+        let events = String(decoding: failure, as: UTF8.self)
+
+        XCTAssertEqual(normalized.statusCode, 400)
+        XCTAssertEqual(normalized.code, "upstream_reasoning_content_required")
+        XCTAssertEqual(
+            normalized.message,
+            "OpenCode Go requires reasoning content for this request."
+        )
+        XCTAssertTrue(events.contains("event: response.failed"))
+        XCTAssertTrue(events.contains("upstream_reasoning_content_required"))
+        XCTAssertFalse(events.contains(secret))
+        XCTAssertFalse(events.contains("Missing required parameter"))
+    }
+
+    func testClassifiesUnsupportedToolSchemaWithoutLeakingUpstreamFields() {
+        let secret = "fixture-secret-tool-schema"
+        let upstreamBody = Data(
+            """
+            {
+              "error": {
+                "message": "Unsupported parameter tools[0].function.parameters. \(secret)",
+                "type": "invalid_request_error",
+                "code": "unsupported_parameter",
+                "param": "tools[0].function.parameters"
+              }
+            }
+            """.utf8
+        )
+
+        let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+            OpenCodeGoBridgeError.upstreamRejected,
+            upstreamStatusCode: 400,
+            upstreamErrorBody: upstreamBody
+        )
+
+        XCTAssertEqual(normalized.statusCode, 400)
+        XCTAssertEqual(
+            normalized.code,
+            "upstream_unsupported_parameter_or_tool_schema"
+        )
+        XCTAssertEqual(
+            normalized.message,
+            "OpenCode Go rejected an unsupported parameter or tool schema."
+        )
+        XCTAssertFalse(normalized.message.contains(secret))
+        XCTAssertFalse(normalized.message.contains("tools[0]"))
+    }
+
+    func testFallsBackToGenericSanitizedErrorForUnknownOrMalformedUpstreamBodies() {
+        let secret = "fixture-secret-malformed-upstream"
+        let bodies = [
+            Data(
+                """
+                {
+                  "error": {
+                    "message": "Unrelated provider failure \(secret)",
+                    "type": "invalid_request_error",
+                    "code": "unexpected_provider_code",
+                    "param": "unrelated"
+                  }
+                }
+                """.utf8
+            ),
+            Data("not-json-\(secret)".utf8)
+        ]
+
+        for upstreamBody in bodies {
+            let normalized = OpenCodeGoBridgeErrorNormalizer.normalize(
+                OpenCodeGoBridgeError.upstreamRejected,
+                upstreamStatusCode: 400,
+                upstreamErrorBody: upstreamBody
+            )
+
+            XCTAssertEqual(normalized.statusCode, 400)
+            XCTAssertEqual(normalized.code, "upstream_invalid_request")
+            XCTAssertEqual(
+                normalized.message,
+                "OpenCode Go rejected the converted request."
+            )
+            XCTAssertFalse(normalized.message.contains(secret))
+        }
     }
 
     func testPreserveApplyConfiguresBridgeBeforeWritingAndKeepsCredentialOutOfFiles() throws {
@@ -2153,6 +2552,156 @@ final class CodexCoreTests: XCTestCase {
         )
     }
 
+    func testLoopbackSerializesSameSessionWithoutBlockingOtherGoalSessions() async throws {
+        let finalResponse = OpenCodeGoBridgeTransportResponse(
+            statusCode: 200,
+            headers: ["content-type": "application/json"],
+            body: Data(
+                #"{"id":"chatcmpl_goal_final","model":"deepseek-v4-flash","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#.utf8
+            )
+        )
+        let transport = BlockingBridgeTransport(
+            responses: [
+                "same-first": OpenCodeGoBridgeTransportResponse(
+                    statusCode: 200,
+                    headers: ["content-type": "application/json"],
+                    body: Data(
+                        #"{"id":"chatcmpl_goal_first","model":"deepseek-v4-flash","choices":[{"message":{"role":"assistant","reasoning_content":"","tool_calls":[{"id":"call_goal","type":"function","function":{"name":"get_goal","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#.utf8
+                    )
+                ),
+                "same-second": finalResponse,
+                "other-session": finalResponse
+            ]
+        )
+        let coordinator = OpenCodeGoSessionRequestCoordinator()
+        let bridge = OpenCodeGoBridgeManager(
+            port: 0,
+            transport: transport,
+            sessionRequestCoordinator: coordinator
+        )
+        try bridge.ensureRunning()
+        defer { bridge.stop() }
+
+        let port = try XCTUnwrap(bridge.localPort)
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/responses"))
+        let goalTools: [[String: Any]] = [[
+            "type": "function",
+            "name": "get_goal",
+            "description": "Read the active goal.",
+            "parameters": [
+                "type": "object",
+                "properties": [String: Any](),
+                "additionalProperties": false
+            ]
+        ]]
+
+        func makeGoalRequest(
+            sessionID: String,
+            tag: String,
+            previousResponseID: String? = nil
+        ) throws -> URLRequest {
+            var requestObject: [String: Any] = [
+                "model": "deepseek-v4-flash",
+                "tools": goalTools
+            ]
+            if let previousResponseID {
+                requestObject["previous_response_id"] = previousResponseID
+                requestObject["input"] = [
+                    [
+                        "type": "function_call_output",
+                        "call_id": "call_goal",
+                        "output": #"{"status":"active"}"#
+                    ],
+                    [
+                        "role": "user",
+                        "content": tag
+                    ]
+                ]
+            } else {
+                requestObject["input"] = tag
+            }
+            let requestBody = try JSONSerialization.data(withJSONObject: requestObject)
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.httpBody = requestBody
+            request.timeoutInterval = 2
+            request.setValue("Bearer inbound-oauth", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(sessionID, forHTTPHeaderField: "Session-Id")
+            return request
+        }
+
+        let firstRequest = try makeGoalRequest(
+            sessionID: "goal-shared",
+            tag: "same-first"
+        )
+        let secondRequest = try makeGoalRequest(
+            sessionID: "goal-shared",
+            tag: "same-second",
+            previousResponseID: "resp_chatcmpl_goal_first"
+        )
+        let otherRequest = try makeGoalRequest(
+            sessionID: "goal-other",
+            tag: "other-session"
+        )
+
+        let firstTask = Task { () throws -> Int in
+            let (_, response) = try await URLSession.shared.data(for: firstRequest)
+            return (response as? HTTPURLResponse)?.statusCode ?? -1
+        }
+        let firstStarted = await waitUntil {
+            await transport.hasStarted(tag: "same-first")
+        }
+
+        let secondTask = Task { () throws -> Int in
+            let (_, response) = try await URLSession.shared.data(for: secondRequest)
+            return (response as? HTTPURLResponse)?.statusCode ?? -1
+        }
+        let secondQueued = await waitUntil {
+            await coordinator.queuedRequestCount(
+                for: "header:session-id:goal-shared"
+            ) == 1
+        }
+
+        let otherTask = Task { () throws -> Int in
+            let (_, response) = try await URLSession.shared.data(for: otherRequest)
+            return (response as? HTTPURLResponse)?.statusCode ?? -1
+        }
+        let otherStarted = await waitUntil {
+            await transport.hasStarted(tag: "other-session")
+        }
+        let secondStartedBeforeFirstRelease = await transport.hasStarted(tag: "same-second")
+
+        // Release every pending fixture path before awaiting task values, so
+        // failures in an assertion cannot leave an HTTP request blocked.
+        await transport.release(tag: "other-session")
+        let otherStatus = try await otherTask.value
+        await transport.release(tag: "same-first")
+        let secondStartedAfterFirstRelease = await waitUntil {
+            await transport.hasStarted(tag: "same-second")
+        }
+        await transport.release(tag: "same-second")
+
+        let firstStatus = try await firstTask.value
+        let secondStatus = try await secondTask.value
+        let slotsCleanedUp = await waitUntil {
+            await coordinator.trackedSessionCount() == 0
+        }
+        let convertedGoalToolNames = await transport.toolNames(for: "same-first")
+
+        XCTAssertTrue(firstStarted, "The first same-session request should reach fake transport.")
+        XCTAssertTrue(secondQueued, "The second same-session request should wait in its slot.")
+        XCTAssertTrue(otherStarted, "A different session should reach fake transport concurrently.")
+        XCTAssertFalse(
+            secondStartedBeforeFirstRelease,
+            "The second same-session request must not race the first upstream turn."
+        )
+        XCTAssertTrue(secondStartedAfterFirstRelease)
+        XCTAssertTrue(slotsCleanedUp, "Completed session slots should be discarded.")
+        XCTAssertEqual(convertedGoalToolNames, ["get_goal"])
+        XCTAssertEqual([firstStatus, secondStatus, otherStatus], [200, 200, 200])
+    }
+
     func testPrepareForUseStartsOnlyForAnActiveBridgeConfiguration() throws {
         let directoryURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -2448,6 +2997,20 @@ final class CodexCoreTests: XCTestCase {
         }
     }
 
+    private func waitUntil(
+        timeout: TimeInterval = 1,
+        condition: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return await condition()
+    }
+
     private func makeProfile(
         presetID: ProviderPresetID,
         model: String? = nil,
@@ -2563,6 +3126,85 @@ private final class CapturingBridgeTransport: OpenCodeGoBridgeTransport, @unchec
         lock.lock()
         requestStorage = request
         lock.unlock()
+    }
+}
+
+private actor BlockingBridgeTransport: OpenCodeGoBridgeTransport {
+    private let responses: [String: OpenCodeGoBridgeTransportResponse]
+    private let fallbackResponse = OpenCodeGoBridgeTransportResponse(
+        statusCode: 500,
+        headers: ["content-type": "application/json"],
+        body: Data()
+    )
+    private var startedTags: Set<String> = []
+    private var toolNamesByTag: [String: [String]] = [:]
+    private var waitingContinuations: [String: CheckedContinuation<Void, Never>] = [:]
+    private var releasedTags: Set<String> = []
+
+    init(responses: [String: OpenCodeGoBridgeTransportResponse]) {
+        self.responses = responses
+    }
+
+    func execute(_ request: URLRequest) async throws -> OpenCodeGoBridgeTransportResponse {
+        let details = Self.requestDetails(from: request)
+        startedTags.insert(details.tag)
+        toolNamesByTag[details.tag] = details.toolNames
+        await wait(for: details.tag)
+        return responses[details.tag] ?? fallbackResponse
+    }
+
+    func hasStarted(tag: String) -> Bool {
+        startedTags.contains(tag)
+    }
+
+    func toolNames(for tag: String) -> [String] {
+        toolNamesByTag[tag] ?? []
+    }
+
+    func release(tag: String) {
+        if let continuation = waitingContinuations.removeValue(forKey: tag) {
+            continuation.resume()
+        } else {
+            releasedTags.insert(tag)
+        }
+    }
+
+    private func wait(for tag: String) async {
+        guard releasedTags.remove(tag) == nil else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if releasedTags.remove(tag) != nil {
+                continuation.resume()
+            } else {
+                waitingContinuations[tag] = continuation
+            }
+        }
+    }
+
+    private static func requestDetails(
+        from request: URLRequest
+    ) -> (tag: String, toolNames: [String]) {
+        guard
+            let body = request.httpBody,
+            let object = try? JSONSerialization.jsonObject(with: body),
+            let root = object as? [String: Any]
+        else {
+            return ("unknown", [])
+        }
+        let tag = (root["messages"] as? [[String: Any]])?
+            .reversed()
+            .compactMap { message -> String? in
+                guard message["role"] as? String == "user" else {
+                    return nil
+                }
+                return message["content"] as? String
+            }
+            .first ?? "unknown"
+        let toolNames = (root["tools"] as? [[String: Any]])?.compactMap {
+            ($0["function"] as? [String: Any])?["name"] as? String
+        } ?? []
+        return (tag, toolNames)
     }
 }
 
