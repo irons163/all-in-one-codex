@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var appSettings: AppSettings
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,6 +42,12 @@ struct ContentView: View {
                     Label(L10n.tr("Restore Backup"), systemImage: "arrow.counterclockwise")
                 }
                 .disabled(appState.isBusy)
+
+                Button {
+                    openSettings()
+                } label: {
+                    Label(L10n.tr("Settings"), systemImage: "gearshape")
+                }
             }
         }
         .sheet(
@@ -150,6 +158,38 @@ struct ContentView: View {
                 appState.beginCreatingProfile()
             }
         }
+    }
+}
+
+struct SettingsView: View {
+    @EnvironmentObject private var appSettings: AppSettings
+
+    var body: some View {
+        Form {
+            Section(L10n.tr("Appearance")) {
+                Picker(L10n.tr("Appearance"), selection: $appSettings.appearance) {
+                    ForEach(AppAppearance.allCases, id: \.self) { appearance in
+                        Text(appearance.displayName)
+                            .tag(appearance)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+            }
+
+            Section(L10n.tr("Language")) {
+                Picker(L10n.tr("Language"), selection: $appSettings.language) {
+                    ForEach(AppLanguage.allCases, id: \.self) { language in
+                        Text(language.displayName)
+                            .tag(language)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .frame(width: 430)
+        .navigationTitle(L10n.tr("Settings"))
     }
 }
 

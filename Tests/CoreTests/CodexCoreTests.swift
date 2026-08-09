@@ -16,6 +16,25 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "de_DE")), .english)
     }
 
+    @MainActor
+    func testAppSettingsPersistsLanguageAndAppearance() throws {
+        let suiteName = "AllInOneCodexTests.Settings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+        settings.language = .japanese
+        settings.appearance = .dark
+
+        let restored = AppSettings(defaults: defaults)
+        XCTAssertEqual(restored.language, .japanese)
+        XCTAssertEqual(restored.appearance, .dark)
+    }
+
+    func testAppAppearanceProvidesSystemLightAndDarkModes() {
+        XCTAssertEqual(Set(AppAppearance.allCases), [.system, .light, .dark])
+    }
+
     func testProviderCatalogContainsRequiredPresets() throws {
         let openCodeGo = try XCTUnwrap(ProviderCatalog.preset(for: .openCodeGo))
         XCTAssertEqual(openCodeGo.baseURL, "https://opencode.ai/zen/go/v1")

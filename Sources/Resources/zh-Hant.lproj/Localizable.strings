@@ -1,3 +1,18 @@
+/* 設定 */
+"Settings" = "設定";
+"Appearance" = "外觀";
+"Language" = "語言";
+"Follow System" = "跟隨系統";
+"Light" = "淺色";
+"Dark" = "深色";
+"English" = "英文";
+"Traditional Chinese" = "繁體中文";
+"Simplified Chinese" = "簡體中文";
+"French" = "法文";
+"Spanish" = "西班牙文";
+"Japanese" = "日文";
+"Korean" = "韓文";
+
 "All-in-One Codex" = "All-in-One Codex";
 "Codex" = "Codex";
 "New Profile" = "新增 Profile";

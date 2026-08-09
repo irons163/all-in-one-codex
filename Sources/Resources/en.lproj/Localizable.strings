@@ -1,4 +1,19 @@
 /* App chrome and profile editor */
+/* Settings */
+"Settings" = "Settings";
+"Appearance" = "Appearance";
+"Language" = "Language";
+"Follow System" = "Follow System";
+"Light" = "Light";
+"Dark" = "Dark";
+"English" = "English";
+"Traditional Chinese" = "Traditional Chinese";
+"Simplified Chinese" = "Simplified Chinese";
+"French" = "French";
+"Spanish" = "Spanish";
+"Japanese" = "Japanese";
+"Korean" = "Korean";
+
 "All-in-One Codex" = "All-in-One Codex";
 "Codex" = "Codex";
 "New Profile" = "New Profile";

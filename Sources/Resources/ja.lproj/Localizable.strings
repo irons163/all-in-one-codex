@@ -1,3 +1,18 @@
+/* 設定 */
+"Settings" = "設定";
+"Appearance" = "外観";
+"Language" = "言語";
+"Follow System" = "システムに従う";
+"Light" = "ライト";
+"Dark" = "ダーク";
+"English" = "英語";
+"Traditional Chinese" = "繁体字中国語";
+"Simplified Chinese" = "簡体字中国語";
+"French" = "フランス語";
+"Spanish" = "スペイン語";
+"Japanese" = "日本語";
+"Korean" = "韓国語";
+
 "All-in-One Codex" = "All-in-One Codex";
 "Codex" = "Codex";
 "New Profile" = "新規プロファイル";

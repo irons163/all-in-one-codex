@@ -3,7 +3,9 @@ import SwiftUI
 
 struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var appSettings: AppSettings
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Group {
@@ -62,6 +64,12 @@ struct MenuBarView: View {
             }
 
             Divider()
+
+            Button {
+                openSettings()
+            } label: {
+                Label(L10n.tr("Settings"), systemImage: "gearshape")
+            }
 
             Button(L10n.tr("Open Main Window")) {
                 openWindow(id: "main")

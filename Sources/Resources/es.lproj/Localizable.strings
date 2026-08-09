@@ -1,3 +1,18 @@
+/* Ajustes */
+"Settings" = "Configuración";
+"Appearance" = "Apariencia";
+"Language" = "Idioma";
+"Follow System" = "Seguir el sistema";
+"Light" = "Claro";
+"Dark" = "Oscuro";
+"English" = "Inglés";
+"Traditional Chinese" = "Chino tradicional";
+"Simplified Chinese" = "Chino simplificado";
+"French" = "Francés";
+"Spanish" = "Español";
+"Japanese" = "Japonés";
+"Korean" = "Coreano";
+
 "All-in-One Codex" = "All-in-One Codex";
 "Codex" = "Codex";
 "New Profile" = "Nuevo perfil";
