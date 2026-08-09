@@ -1,0 +1,274 @@
+name: Release DMG
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_channel:
+        description: "Build channel"
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - dev
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - id: arm64
+            label: apple-silicon
+          - id: x86_64
+            label: intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)"
+          if [[ -z "${XCODE_APP:-}" ]]; then
+            echo "No Xcode installation found under /Applications" >&2
+            exit 1
+          fi
+          echo "Using Xcode at: $XCODE_APP"
+          echo "DEVELOPER_DIR=$XCODE_APP/Contents/Developer" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+          XCODE_VERSION_OUTPUT="$(xcodebuild -version)"
+          XCODE_VERSION="$(awk '/^Xcode / {print $2; exit}' <<<"$XCODE_VERSION_OUTPUT")"
+          XCODE_MAJOR="${XCODE_VERSION%%.*}"
+          echo "Selected Xcode version: $XCODE_VERSION"
+          if [[ "${XCODE_MAJOR:-0}" -lt 16 ]]; then
+            echo "Xcode 16+ is required for this project format, got: $XCODE_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_API_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          for name in \
+            APPLE_CERTIFICATE_P12_BASE64 \
+            APPLE_CERTIFICATE_PASSWORD \
+            KEYCHAIN_PASSWORD \
+            APPLE_TEAM_ID \
+            APPLE_API_KEY_ID \
+            APPLE_API_ISSUER_ID \
+            APPLE_API_PRIVATE_KEY_BASE64; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import Developer ID certificate
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          IDENTITIES="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true)"
+          echo "$IDENTITIES"
+          if ! grep -q "Developer ID Application" <<<"$IDENTITIES"; then
+            echo "No Developer ID Application identity found in imported keychain." >&2
+            exit 1
+          fi
+          if ! grep -q "($APPLE_TEAM_ID)" <<<"$IDENTITIES"; then
+            echo "No Developer ID Application identity matches APPLE_TEAM_ID=$APPLE_TEAM_ID." >&2
+            exit 1
+          fi
+
+      - name: Configure notarytool profile
+        shell: bash
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_API_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "$APPLE_API_PRIVATE_KEY_BASE64" | base64 --decode > "$KEY_PATH"
+          xcrun notarytool store-credentials "AC_NOTARY" \
+            --key "$KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID"
+
+      - name: Resolve and validate release version
+        shell: bash
+        env:
+          RELEASE_PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || 'false' }}
+        run: |
+          set -euo pipefail
+
+          TAG_VERSION=""
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            TAG_VERSION="${{ github.event.release.tag_name }}"
+          fi
+
+          TAG_VERSION="${TAG_VERSION#refs/tags/}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          TAG_VERSION="${TAG_VERSION#V}"
+
+          MARKETING_VERSION="$(xcodebuild \
+            -project AllInOneCodex.xcodeproj \
+            -scheme AllInOneCodex \
+            -configuration Release \
+            -showBuildSettings \
+            | awk -F ' = ' '/MARKETING_VERSION/ {print $2; exit}')"
+          MARKETING_VERSION="${MARKETING_VERSION#v}"
+          MARKETING_VERSION="${MARKETING_VERSION#V}"
+
+          if [[ -z "$MARKETING_VERSION" ]]; then
+            echo "Failed to resolve MARKETING_VERSION from Xcode project." >&2
+            exit 1
+          fi
+
+          TAG_BASE_VERSION="${TAG_VERSION%%[-+]*}"
+          if [[ -n "$TAG_VERSION" && "$RELEASE_PRERELEASE" == "true" && "$TAG_BASE_VERSION" != "$MARKETING_VERSION" ]]; then
+            echo "Version mismatch: prerelease tag base ($TAG_BASE_VERSION) != MARKETING_VERSION ($MARKETING_VERSION)." >&2
+            exit 1
+          fi
+          if [[ -n "$TAG_VERSION" && "$RELEASE_PRERELEASE" != "true" && "$TAG_VERSION" != "$MARKETING_VERSION" ]]; then
+            echo "Version mismatch: release tag ($TAG_VERSION) != MARKETING_VERSION ($MARKETING_VERSION)." >&2
+            exit 1
+          fi
+
+          RELEASE_VERSION="${TAG_VERSION:-$MARKETING_VERSION}"
+          echo "Resolved release version: $RELEASE_VERSION"
+          echo "RELEASE_VERSION=$RELEASE_VERSION" >> "$GITHUB_ENV"
+
+      - name: Build and notarize DMG
+        shell: bash
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ARCH_ID: ${{ matrix.arch.id }}
+          ARCH_LABEL: ${{ matrix.arch.label }}
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          RELEASE_CHANNEL: ${{ github.event.inputs.release_channel }}
+          RELEASE_PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || 'false' }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          chmod +x scripts/build_and_notarize_dmg.sh
+
+          CHANNEL="${RELEASE_CHANNEL:-}"
+          if [[ -z "$CHANNEL" ]]; then
+            if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
+              CHANNEL="dev"
+            else
+              CHANNEL="stable"
+            fi
+          fi
+          if [[ "$CHANNEL" != "stable" && "$CHANNEL" != "dev" ]]; then
+            echo "Unsupported release channel: $CHANNEL" >&2
+            exit 1
+          fi
+
+          VERSION="$RELEASE_VERSION"
+          if [[ "$CHANNEL" == "dev" && "$VERSION" != *-* ]]; then
+            VERSION="${VERSION}-dev"
+          fi
+
+          APP_NAME=AllInOneCodex \
+          SCHEME=AllInOneCodex \
+          PROJECT_PATH=AllInOneCodex.xcodeproj \
+          DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+          VERSION="$VERSION" \
+          ARCHS="$ARCH_ID" \
+          ARCH_LABEL="$ARCH_LABEL" \
+          NOTARY_PROFILE=AC_NOTARY \
+          scripts/build_and_notarize_dmg.sh
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch.label }}
+          path: |
+            dist/*.dmg
+            dist/*.dSYM.zip
+
+      - name: Attach build artifacts to GitHub Release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" dist/*.dmg dist/*.dSYM.zip --clobber
+
+      - name: Attach localized release notes when present
+        if: github.event_name == 'release' && matrix.arch.id == 'arm64'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          TAG_VERSION="${RELEASE_TAG#v}"
+          TAG_VERSION="${TAG_VERSION#V}"
+          BASE_VERSION="${TAG_VERSION%%[-+]*}"
+          NOTES_DIR=""
+
+          for candidate in \
+            "docs/release-notes/${RELEASE_TAG}" \
+            "docs/release-notes/v${TAG_VERSION}" \
+            "docs/release-notes/${TAG_VERSION}" \
+            "docs/release-notes/v${BASE_VERSION}" \
+            "docs/release-notes/${BASE_VERSION}"; do
+            if [[ -d "$candidate" ]]; then
+              NOTES_DIR="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$NOTES_DIR" ]]; then
+            echo "No localized release notes directory found; continuing without note assets."
+            exit 0
+          fi
+
+          shopt -s nullglob
+          NOTE_ASSETS=("${NOTES_DIR}"/release-notes.*.md "${NOTES_DIR}"/release-notes.*.txt)
+          if (( ${#NOTE_ASSETS[@]} == 0 )); then
+            echo "No localized release note files found; continuing without note assets."
+            exit 0
+          fi
+
+          gh release upload "$RELEASE_TAG" "${NOTE_ASSETS[@]}" --clobber

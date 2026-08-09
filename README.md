@@ -210,6 +210,12 @@ xcodebuild \
   test
 ```
 
+## Release DMG
+
+Release packaging is defined in [`RELEASE_DMG.md`](RELEASE_DMG.md). The GitHub
+Action builds signed and notarized Apple Silicon and Intel DMGs when a GitHub
+Release is published, and also supports manual artifact builds.
+
 ## Core 整合
 
 `Sources/App/AppState.swift` 是集中呼叫 Core 的 app 邊界，負責：
