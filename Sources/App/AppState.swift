@@ -69,9 +69,9 @@ final class AppState: ObservableObject {
             var label: String {
                 switch self {
                 case .responses:
-                    return "Responses"
+                    return L10n.tr("Responses")
                 case .chatCompletions:
-                    return "Chat Completions → 本機 bridge"
+                    return L10n.tr("Chat Completions → 本機 bridge")
                 }
             }
         }
@@ -211,8 +211,9 @@ final class AppState: ObservableObject {
 
     // MARK: Core dependencies
 
-    static let restartRequiredMessage =
-        "設定與 model catalog 已更新；請完全退出並重新啟動 Codex App/CLI。"
+    static var restartRequiredMessage: String {
+        L10n.tr("設定與 model catalog 已更新；請完全退出並重新啟動 Codex App/CLI。")
+    }
 
     private let profileRepository: ProfileRepository
     private let credentialStore: any CredentialStoring
@@ -274,7 +275,7 @@ final class AppState: ObservableObject {
 
     func providerName(for presetKey: String) -> String {
         presetOptions.first { $0.id == presetKey }?.name
-            ?? "未選擇 provider"
+            ?? L10n.tr("未選擇 provider")
     }
 
     func defaultModel(for presetKey: String) -> String {
@@ -333,7 +334,7 @@ final class AppState: ObservableObject {
         guard let presetID = corePresetID(for: presetKey) else {
             return unavailableRoute(
                 endpoint: fallbackEndpoint,
-                explanation: "Provider preset 無效，無法判定 route。"
+                explanation: L10n.tr("Provider preset 無效，無法判定 route。")
             )
         }
 
@@ -341,7 +342,7 @@ final class AppState: ObservableObject {
         guard !trimmedModel.isEmpty else {
             return unavailableRoute(
                 endpoint: fallbackEndpoint,
-                explanation: "請輸入或選擇 model，才能判定 route。"
+                explanation: L10n.tr("請輸入或選擇 model，才能判定 route。")
             )
         }
 
@@ -366,7 +367,7 @@ final class AppState: ObservableObject {
         } catch {
             return unavailableRoute(
                 endpoint: fallbackEndpoint,
-                explanation: "Core 無法判定此 model 的 route。"
+                explanation: L10n.tr("Core 無法判定此 model 的 route。")
             )
         }
     }
@@ -454,11 +455,11 @@ final class AppState: ObservableObject {
             }
             prepareEditorForSelection()
             statusMessage = coreProfiles.isEmpty
-                ? "尚未建立 profile。"
-                : "已載入 \(coreProfiles.count) 個 profile。"
+                ? L10n.tr("尚未建立 profile。")
+                : L10n.tr("已載入 %lld 個 profile。", coreProfiles.count)
             if let preparationError {
                 errorMessage = failureMessage(
-                    "啟動 OpenCode Go bridge",
+                    L10n.tr("啟動 OpenCode Go bridge"),
                     error: preparationError
                 )
             }
@@ -468,15 +469,18 @@ final class AppState: ObservableObject {
             statusMessage = nil
             let failures = [
                 preparationError.map {
-                    failureMessage("啟動 OpenCode Go bridge", error: $0)
+                    failureMessage(L10n.tr("啟動 OpenCode Go bridge"), error: $0)
                 },
-                failureMessage("載入 profiles", error: error)
+                failureMessage(L10n.tr("載入 profiles"), error: error)
             ]
             errorMessage = failures.compactMap { $0 }.joined(separator: "\n")
         }
 
         if let restoreError = await loadRestoreData() {
-            let message = failureMessage("載入 config backups", error: restoreError)
+            let message = failureMessage(
+                L10n.tr("載入 config backups"),
+                error: restoreError
+            )
             if let existingMessage = errorMessage, !existingMessage.isEmpty {
                 errorMessage = "\(existingMessage)\n\(message)"
             } else {
@@ -487,7 +491,7 @@ final class AppState: ObservableObject {
 
     func refreshRestoreData() async {
         if let restoreError = await loadRestoreData() {
-            fail("載入 config backups", error: restoreError)
+            fail(L10n.tr("載入 config backups"), error: restoreError)
         }
     }
 
@@ -554,15 +558,15 @@ final class AppState: ObservableObject {
             prepareEditorForSelection()
             preview = nil
             statusMessage = hasCredential
-                ? "Profile 已儲存。"
-                : "Profile 已儲存，但尚未設定 API key。"
+                ? L10n.tr("Profile 已儲存。")
+                : L10n.tr("Profile 已儲存，但尚未設定 API key。")
             return profile.id
         } catch {
             // Do not retain a credential after it has been handed to Core.
             if credentialWasStored {
                 editorDraft.apiKey = ""
             }
-            fail("儲存 profile", error: error)
+            fail(L10n.tr("儲存 profile"), error: error)
             return nil
         }
     }
@@ -582,15 +586,15 @@ final class AppState: ObservableObject {
             // Core integration point: this is the sole preview call.
             let corePreview = try clientAdapter.preview(profile: profile)
             preview = makePreviewSnapshot(for: profile, corePreview: corePreview)
-            statusMessage = "Preview 已準備完成，尚未修改設定。"
+            statusMessage = L10n.tr("Preview 已準備完成，尚未修改設定。")
         } catch {
-            fail("Preview", error: error)
+            fail(L10n.tr("Preview"), error: error)
         }
     }
 
     func applySelectedProfile() async {
         guard let selectedProfileID else {
-            fail("套用 profile")
+            fail(L10n.tr("套用 profile"))
             return
         }
 
@@ -618,7 +622,7 @@ final class AppState: ObservableObject {
     func restore(_ backup: CodexConfigurationBackup) async {
         guard !isBusy else { return }
         guard let codexAdapter else {
-            fail("Restore Backup", error: AppStateError.restoreUnavailable)
+            fail(L10n.tr("Restore Backup"), error: AppStateError.restoreUnavailable)
             return
         }
 
@@ -643,7 +647,7 @@ final class AppState: ObservableObject {
             await refreshRestoreData()
             isShowingRestore = false
         } catch {
-            fail("Restore Backup", error: error)
+            fail(L10n.tr("Restore Backup"), error: error)
         }
     }
 
@@ -662,7 +666,7 @@ final class AppState: ObservableObject {
             receipt = newestEntry.receipt
             journalEntry = newestEntry
         } else {
-            fail("Undo")
+            fail(L10n.tr("Undo"))
             return
         }
 
@@ -678,19 +682,20 @@ final class AppState: ObservableObject {
             rebuildProfileItems()
             modelCatalogStatus = .restored
             restartRequired = true
-            statusMessage = "已復原上一個 switch；請完全退出並重新啟動 Codex App/CLI。"
+            statusMessage = L10n.tr("已復原上一個 switch；請完全退出並重新啟動 Codex App/CLI。")
 
             if let journalEntry {
                 do {
                     try await receiptRepository.delete(journalEntry)
                 } catch {
-                    statusMessage =
+                    statusMessage = L10n.tr(
                         "設定已復原，但 persistent Undo journal 無法更新；目前設定交易仍已完成。"
+                    )
                 }
             }
             await refreshRestoreData()
         } catch {
-            fail("Undo", error: error)
+            fail(L10n.tr("Undo"), error: error)
         }
     }
 
@@ -698,13 +703,13 @@ final class AppState: ObservableObject {
 
     private func applyProfile(profileID: UUID) async {
         guard let profile = coreProfiles.first(where: { $0.id == profileID }) else {
-            fail("套用 profile")
+            fail(L10n.tr("套用 profile"))
             return
         }
 
         guard credentialStore.contains(for: profile.id) else {
             credentialAvailability[profile.id] = false
-            fail("套用 profile", error: AppStateError.missingCredential)
+            fail(L10n.tr("套用 profile"), error: AppStateError.missingCredential)
             return
         }
 
@@ -736,7 +741,7 @@ final class AppState: ObservableObject {
             await persistReceipt(receipt, profile: profile)
             await refreshRestoreData()
         } catch {
-            fail("套用 profile", error: error)
+            fail(L10n.tr("套用 profile"), error: error)
         }
     }
 
@@ -744,8 +749,9 @@ final class AppState: ObservableObject {
         do {
             try await receiptRepository.persist(receipt: receipt, profile: profile)
         } catch {
-            statusMessage =
+            statusMessage = L10n.tr(
                 "設定已套用，但 persistent Undo journal 無法寫入；本次仍可在目前執行期間 Undo。"
+            )
         }
     }
 
@@ -764,8 +770,9 @@ final class AppState: ObservableObject {
                 createdAt: receipt.timestamp
             )
         } catch {
-            statusMessage =
+            statusMessage = L10n.tr(
                 "設定已完成，但 persistent Undo journal 無法寫入；本次仍可在目前執行期間 Undo。"
+            )
         }
     }
 
@@ -784,9 +791,9 @@ final class AppState: ObservableObject {
         let hasCredential = credentialStore.contains(for: profileID)
         credentialAvailability[profileID] = hasCredential
         guard hasCredential else {
-            statusMessage = "尚未設定 API key。"
+            statusMessage = L10n.tr("尚未設定 API key。")
             fail(
-                "套用 profile",
+                L10n.tr("套用 profile"),
                 error: AppStateError.missingCredential
             )
             return false
@@ -859,9 +866,9 @@ final class AppState: ObservableObject {
             preserveSessions: profile.preserveSessions
         )
         var changes = [
-            "更新 ~/.codex/config.toml",
-            "切換 provider 為 \(presentation.name)",
-            "使用 model \(profile.model)"
+            L10n.tr("更新 ~/.codex/config.toml"),
+            L10n.tr("切換 provider 為 %@", presentation.name),
+            L10n.tr("使用 model %@", profile.model)
         ]
         let catalogModelCount = modelCatalogCount(
             for: presetKey(for: profile.presetID),
@@ -869,43 +876,51 @@ final class AppState: ObservableObject {
         )
         if let catalogModelCount {
             changes.append(
-                "Apply 時建立 Codex model catalog（\(catalogModelCount) 個 models）"
+                L10n.tr("Apply 時建立 Codex model catalog（%lld 個 models）", catalogModelCount)
             )
         }
         var warnings: [String] = []
 
         if profile.preserveSessions {
-            changes.append("保留 Codex 內建 openai provider namespace，重啟後可重新開啟既有 sessions")
-            changes.append("所有請求經本機 proxy，並由 Keychain 注入此 profile 的 API key")
-            if let loopbackEndpoint = route.loopbackEndpoint {
-                changes.append("Loopback endpoint：\(loopbackEndpoint)")
-            }
-            if let upstreamEndpoint = route.upstreamEndpoint {
-                changes.append("Upstream endpoint：\(upstreamEndpoint)")
-            }
-            warnings.append("保留模式需要 All-in-One Codex 持續開啟，並在 Apply 後完全重新啟動 Codex。")
-            warnings.append("正在執行中的 task 不會熱切換；請在重啟後重新開啟既有 task。")
-        } else if route.bridgeEnabled {
-            let bridgeLabel = route.bridgeStatus == .running
-                ? "執行中"
-                : "Apply 時自動啟動"
             changes.append(
-                "Bridge：\(bridgeLabel)（本機 Responses ↔ Chat Completions 轉換）"
+                L10n.tr("保留 Codex 內建 openai provider namespace，重啟後可重新開啟既有 sessions")
+            )
+            changes.append(
+                L10n.tr("所有請求經本機 proxy，並由 Keychain 注入此 profile 的 API key")
             )
             if let loopbackEndpoint = route.loopbackEndpoint {
-                changes.append("Loopback endpoint：\(loopbackEndpoint)")
+                changes.append(L10n.tr("Loopback endpoint：%@", loopbackEndpoint))
             }
             if let upstreamEndpoint = route.upstreamEndpoint {
-                changes.append("Upstream endpoint：\(upstreamEndpoint)")
+                changes.append(L10n.tr("Upstream endpoint：%@", upstreamEndpoint))
+            }
+            warnings.append(
+                L10n.tr("保留模式需要 All-in-One Codex 持續開啟，並在 Apply 後完全重新啟動 Codex。")
+            )
+            warnings.append(
+                L10n.tr("正在執行中的 task 不會熱切換；請在重啟後重新開啟既有 task。")
+            )
+        } else if route.bridgeEnabled {
+            let bridgeLabel = route.bridgeStatus == .running
+                ? L10n.tr("執行中")
+                : L10n.tr("Apply 時自動啟動")
+            changes.append(
+                L10n.tr("Bridge：%@（本機 Responses ↔ Chat Completions 轉換）", bridgeLabel)
+            )
+            if let loopbackEndpoint = route.loopbackEndpoint {
+                changes.append(L10n.tr("Loopback endpoint：%@", loopbackEndpoint))
+            }
+            if let upstreamEndpoint = route.upstreamEndpoint {
+                changes.append(L10n.tr("Upstream endpoint：%@", upstreamEndpoint))
             }
             if route.bridgeStatus != .running {
                 warnings.append(
-                    "Bridge 會在 Apply 時由 All-in-One Codex 自動啟動；不需另外手動啟動。"
+                    L10n.tr("Bridge 會在 Apply 時由 All-in-One Codex 自動啟動；不需另外手動啟動。")
                 )
             }
         } else {
-            changes.append("Bridge：未啟用（直接使用 Responses）")
-            changes.append("Endpoint：\(route.endpoint)")
+            changes.append(L10n.tr("Bridge：未啟用（直接使用 Responses）"))
+            changes.append(L10n.tr("Endpoint：%@", route.endpoint))
         }
 
         return PreviewSnapshot(
@@ -1013,9 +1028,9 @@ final class AppState: ObservableObject {
                 ? Self.openCodeGoUpstreamEndpoint
                 : route.baseURL
             return RoutePresentation(
-                routeName: "Session-preserving local proxy",
+                routeName: L10n.tr("Session-preserving local proxy"),
                 endpoint: OpenCodeGoBridgeManager.baseURL,
-                explanation: "保留 Codex 內建 openai provider namespace；請求經本機 proxy 從 Keychain 取得 API key，再依 model 透明轉送或轉換。重啟後可重新開啟既有 task，使用期間請保持 All-in-One Codex 開啟。",
+                explanation: L10n.tr("保留 Codex 內建 openai provider namespace；請求經本機 proxy 從 Keychain 取得 API key，再依 model 透明轉送或轉換。重啟後可重新開啟既有 task，使用期間請保持 All-in-One Codex 開啟。"),
                 bridgeEnabled: true,
                 bridgeStatus: bridgeStatus,
                 loopbackEndpoint: OpenCodeGoBridgeManager.baseURL,
@@ -1027,9 +1042,9 @@ final class AppState: ObservableObject {
         if route.requiresLoopbackBridge {
             let upstreamEndpoint = Self.openCodeGoUpstreamEndpoint
             return RoutePresentation(
-                routeName: "Local Bridge → upstream Chat Completions",
+                routeName: L10n.tr("Local Bridge → upstream Chat Completions"),
                 endpoint: route.baseURL,
-                explanation: "Chat-only model 由本機 bridge 轉換 Responses ↔ Chat Completions；Apply 會自動啟動 bridge，使用期間請保持 All-in-One Codex 開啟。",
+                explanation: L10n.tr("Chat-only model 由本機 bridge 轉換 Responses ↔ Chat Completions；Apply 會自動啟動 bridge，使用期間請保持 All-in-One Codex 開啟。"),
                 bridgeEnabled: true,
                 bridgeStatus: bridgeStatus,
                 loopbackEndpoint: route.baseURL,
@@ -1039,9 +1054,9 @@ final class AppState: ObservableObject {
         }
 
         return RoutePresentation(
-            routeName: "Direct Responses",
+            routeName: L10n.tr("Direct Responses"),
             endpoint: route.baseURL,
-            explanation: "Codex 直接使用 provider 的 Responses endpoint。",
+            explanation: L10n.tr("Codex 直接使用 provider 的 Responses endpoint。"),
             bridgeEnabled: false,
             bridgeStatus: nil,
             loopbackEndpoint: nil,
@@ -1055,7 +1070,7 @@ final class AppState: ObservableObject {
         explanation: String
     ) -> RoutePresentation {
         RoutePresentation(
-            routeName: "Route unavailable",
+            routeName: L10n.tr("Route unavailable"),
             endpoint: endpoint,
             explanation: explanation,
             bridgeEnabled: false,
@@ -1069,13 +1084,13 @@ final class AppState: ObservableObject {
     private func routingExplanation(for error: ProviderRoutingError) -> String {
         switch error {
         case .invalidModel:
-            return "Model 不可為空。"
+            return L10n.tr("Model 不可為空。")
         case .unknownOpenCodeGoModel:
-            return "此 OpenCode Go model 不在支援清單內；Core 會拒絕此設定。"
+            return L10n.tr("此 OpenCode Go model 不在支援清單內；Core 會拒絕此設定。")
         case .unsupportedOpenCodeGoWireAPI(.anthropicMessages):
-            return "此 model 使用 Anthropic Messages API，目前尚未支援；Core 會拒絕此設定。"
+            return L10n.tr("此 model 使用 Anthropic Messages API，目前尚未支援；Core 會拒絕此設定。")
         case .unsupportedOpenCodeGoWireAPI:
-            return "此 OpenCode Go model 使用目前不支援的 provider API；Core 會拒絕此設定。"
+            return L10n.tr("此 OpenCode Go model 使用目前不支援的 provider API；Core 會拒絕此設定。")
         }
     }
 
@@ -1102,7 +1117,7 @@ final class AppState: ObservableObject {
         if normalized.contains("openrouter") {
             return "https://openrouter.ai/api/v1"
         }
-        return "由 Core preset 提供"
+        return L10n.tr("由 Core preset 提供")
     }
 
     private func fail(_ operation: String, error: Error? = nil) {
@@ -1114,15 +1129,15 @@ final class AppState: ObservableObject {
         // errors remain generic so provider request details cannot leak into
         // the UI.
         if let friendlyMessage = friendlyCoreErrorMessage(error) {
-            return "\(operation) 失敗：\(friendlyMessage)"
+            return L10n.tr("%@ 失敗：%@", operation, friendlyMessage)
         }
         if let localizedError = error as? LocalizedError,
            let description = localizedError.errorDescription,
            !description.isEmpty
         {
-            return "\(operation) 失敗：\(description)"
+            return L10n.tr("%@ 失敗：%@", operation, description)
         } else {
-            return "\(operation) 失敗。請檢查 Core adapter 與設定。"
+            return L10n.tr("%@ 失敗。請檢查 Core adapter 與設定。", operation)
         }
     }
 
@@ -1134,65 +1149,65 @@ final class AppState: ObservableObject {
         if let catalogError = error as? CodexModelCatalogError {
             switch catalogError {
             case .emptyModels:
-                return "Codex model catalog 不可為空。"
+                return L10n.tr("Codex model catalog 不可為空。")
             case .tooManyModels:
-                return "Codex model catalog 的 model 數量超過安全上限。"
+                return L10n.tr("Codex model catalog 的 model 數量超過安全上限。")
             case .duplicateModel:
-                return "Codex model catalog 含有重複 model。"
+                return L10n.tr("Codex model catalog 含有重複 model。")
             case .invalidModelIdentifier:
-                return "選取的 model ID 無法安全寫入 Codex model catalog。"
+                return L10n.tr("選取的 model ID 無法安全寫入 Codex model catalog。")
             case .invalidSchema:
-                return "Codex model catalog 格式不受支援。"
+                return L10n.tr("Codex model catalog 格式不受支援。")
             case .catalogTooLarge:
-                return "Codex model catalog 太大，未套用設定。"
+                return L10n.tr("Codex model catalog 太大，未套用設定。")
             case .unreadableCatalog:
-                return "Codex model catalog 無法安全讀取。"
+                return L10n.tr("Codex model catalog 無法安全讀取。")
             case .unsafeCatalogPath:
-                return "Codex model catalog 路徑不安全，為保護現有設定未覆寫。"
+                return L10n.tr("Codex model catalog 路徑不安全，為保護現有設定未覆寫。")
             }
         }
 
         if let switchError = error as? CodexSwitchError {
             switch switchError {
             case .invalidProfile:
-                return "選取的 profile 不完整，未修改 Codex 設定。"
+                return L10n.tr("選取的 profile 不完整，未修改 Codex 設定。")
             case .malformedManagedMarkers:
-                return "Codex 設定的 managed 區塊不完整，為安全起見未覆寫。"
+                return L10n.tr("Codex 設定的 managed 區塊不完整，為安全起見未覆寫。")
             case .misplacedActiveMarker:
-                return "Codex 設定的 managed active 區塊位置不安全，未覆寫。"
+                return L10n.tr("Codex 設定的 managed active 區塊位置不安全，未覆寫。")
             case .missingCredential:
-                return "尚未找到此 profile 的 API key，請先在 Credentials 設定。"
+                return L10n.tr("尚未找到此 profile 的 API key，請先在 Credentials 設定。")
             case .unreadableConfiguration:
-                return "Codex 設定無法安全讀取，未覆寫現有檔案。"
+                return L10n.tr("Codex 設定無法安全讀取，未覆寫現有檔案。")
             case .unableToWriteConfiguration:
-                return "Codex 設定無法安全寫入，可能已回復原狀。"
+                return L10n.tr("Codex 設定無法安全寫入，可能已回復原狀。")
             case .backupUnavailable:
-                return "找不到可用的 config backup，請重新整理清單。"
+                return L10n.tr("找不到可用的 config backup，請重新整理清單。")
             case .backupIntegrityConflict:
-                return "config backup 與記錄狀態不一致，為安全起見未復原。"
+                return L10n.tr("config backup 與記錄狀態不一致，為安全起見未復原。")
             case .configurationChanged:
-                return "Codex 設定在交易後已變更，為安全起見無法 Undo。"
+                return L10n.tr("Codex 設定在交易後已變更，為安全起見無法 Undo。")
             case .modelCatalogChanged:
-                return "Codex model catalog 在套用後已變更，為安全起見無法 Undo。"
+                return L10n.tr("Codex model catalog 在套用後已變更，為安全起見無法 Undo。")
             case .foreignModelCatalogPointer:
-                return "現有 Codex 設定指向其他 model catalog；為安全起見未覆寫，請先移除或改回該設定。"
+                return L10n.tr("現有 Codex 設定指向其他 model catalog；為安全起見未覆寫，請先移除或改回該設定。")
             case .foreignOpenAIBaseURL:
-                return "現有 Codex 設定已包含非本 App 管理的 openai_base_url；為避免誤送請求，請先移除或改回該設定。"
+                return L10n.tr("現有 Codex 設定已包含非本 App 管理的 openai_base_url；為避免誤送請求，請先移除或改回該設定。")
             case .unsafeBackupPath:
-                return "config backup 路徑不安全，為保護現有設定未覆寫。"
+                return L10n.tr("config backup 路徑不安全，為保護現有設定未覆寫。")
             case .invalidConfigurationBackup:
-                return "選取的 config backup 不是可讀的 TOML，未覆寫現有設定。"
+                return L10n.tr("選取的 config backup 不是可讀的 TOML，未覆寫現有設定。")
             case .configurationBackupTooLarge:
-                return "選取的 config backup 超過安全大小上限，未覆寫現有設定。"
+                return L10n.tr("選取的 config backup 超過安全大小上限，未覆寫現有設定。")
             }
         }
 
         if let repositoryError = error as? SwitchReceiptRepositoryError {
             switch repositoryError {
             case .unableToWriteJournal:
-                return "persistent Undo journal 無法寫入；設定交易本身仍可安全完成。"
+                return L10n.tr("persistent Undo journal 無法寫入；設定交易本身仍可安全完成。")
             case .unableToDeleteJournal:
-                return "persistent Undo journal 無法更新。"
+                return L10n.tr("persistent Undo journal 無法更新。")
             }
         }
 
@@ -1209,15 +1224,15 @@ final class AppState: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .invalidName:
-                return "Profile 名稱不可為空。"
+                return L10n.tr("Profile 名稱不可為空。")
             case .invalidProvider:
-                return "Provider preset 無效。"
+                return L10n.tr("Provider preset 無效。")
             case .invalidModel:
-                return "Model 不可為空。"
+                return L10n.tr("Model 不可為空。")
             case .missingCredential:
-                return "尚未設定 API key。請先在 Credentials 輸入 API key。"
+                return L10n.tr("尚未設定 API key。請先在 Credentials 輸入 API key。")
             case .restoreUnavailable:
-                return "目前的 client adapter 不支援 Codex config backup restore。"
+                return L10n.tr("目前的 client adapter 不支援 Codex config backup restore。")
             }
         }
     }

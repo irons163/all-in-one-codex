@@ -23,21 +23,21 @@ struct ContentView: View {
                 Button {
                     appState.beginCreatingProfile()
                 } label: {
-                    Label("New Profile", systemImage: "plus")
+                    Label(L10n.tr("New Profile"), systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: [.command])
 
                 Button {
                     Task { await appState.undoLastSwitch() }
                 } label: {
-                    Label("Undo", systemImage: "arrow.uturn.backward")
+                    Label(L10n.tr("Undo"), systemImage: "arrow.uturn.backward")
                 }
                 .disabled(appState.isBusy || !appState.canUndoLastSwitch)
 
                 Button {
                     appState.beginRestore()
                 } label: {
-                    Label("Restore Backup", systemImage: "arrow.counterclockwise")
+                    Label(L10n.tr("Restore Backup"), systemImage: "arrow.counterclockwise")
                 }
                 .disabled(appState.isBusy)
             }
@@ -66,7 +66,7 @@ struct ContentView: View {
             .frame(minWidth: 560, minHeight: 560)
         }
         .alert(
-            "操作失敗",
+            L10n.tr("操作失敗"),
             isPresented: Binding(
                 get: { appState.errorMessage != nil },
                 set: { isPresented in
@@ -76,9 +76,9 @@ struct ContentView: View {
                 }
             )
         ) {
-            Button("好", role: .cancel) {}
+            Button(L10n.tr("好"), role: .cancel) {}
         } message: {
-            Text(appState.errorMessage ?? "發生未知錯誤。")
+            Text(verbatim: appState.errorMessage ?? L10n.tr("發生未知錯誤。"))
         }
         .onChange(of: appState.selectedProfileID) { _, _ in
             appState.prepareEditorForSelection()
@@ -92,9 +92,9 @@ struct ContentView: View {
         List(selection: $appState.selectedProfileID) {
             if appState.profileItems.isEmpty {
                 ContentUnavailableView(
-                    "尚無 Profiles",
+                    L10n.tr("尚無 Profiles"),
                     systemImage: "person.crop.circle.badge.plus",
-                    description: Text("使用上方 + 建立第一個 provider profile。")
+                    description: Text(verbatim: L10n.tr("使用上方 + 建立第一個 provider profile。"))
                 )
                 .listRowSeparator(.hidden)
             } else {
@@ -104,14 +104,14 @@ struct ContentView: View {
                 }
             }
         }
-        .navigationTitle("Profiles")
+        .navigationTitle(L10n.tr("Profiles"))
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
                 if let selectedProfileItem = appState.selectedProfileItem,
                    selectedProfileItem.requiresLoopbackBridge
                 {
                     BridgeStatusBadge(status: appState.bridgeStatus)
-                    Text("需要 bridge 時，Apply 會自動啟動；不需另外手動啟動。")
+                    Text(verbatim: L10n.tr("需要 bridge 時，Apply 會自動啟動；不需另外手動啟動。"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -125,7 +125,7 @@ struct ContentView: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("處理中…")
+                        Text(verbatim: L10n.tr("處理中…"))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -163,7 +163,7 @@ private struct RestoreBackupView: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Restore 處理中…")
+                    Text(verbatim: L10n.tr("Restore 處理中…"))
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -173,14 +173,14 @@ private struct RestoreBackupView: View {
             }
 
             List {
-                Section("Config backups") {
+                Section(L10n.tr("Config backups")) {
                     if appState.restoreBackups.isEmpty {
                         ContentUnavailableView(
-                            "尚無可用的 config backups",
+                            L10n.tr("尚無可用的 config backups"),
                             systemImage: "archivebox",
-                            description: Text(
+                            description: Text(verbatim: L10n.tr(
                                 "完成一次 Apply 後，App 建立的 config.toml backup 會出現在這裡。"
-                            )
+                            ))
                         )
                         .listRowSeparator(.hidden)
                     } else {
@@ -196,9 +196,9 @@ private struct RestoreBackupView: View {
                     }
                 }
 
-                Section("Undo journal") {
+                Section(L10n.tr("Undo journal")) {
                     if appState.receiptJournalEntries.isEmpty {
-                        Text("尚無 persistent Undo journal。成功 Apply 或 Restore 後會自動保留。")
+                        Text(verbatim: L10n.tr("尚無 persistent Undo journal。成功 Apply 或 Restore 後會自動保留。"))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     } else {
@@ -213,11 +213,11 @@ private struct RestoreBackupView: View {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "info.circle")
                     .foregroundStyle(.secondary)
-                Text(
+                Text(verbatim: L10n.tr(
                     "Restore 只會復原 config.toml 與 app-owned model catalog；"
-                        + "不會複製或刪除 sessions、history，也不會搬移約 20GB 的 session data。"
-                        + "完成後請完全退出並重新啟動 Codex。"
-                )
+                    + "不會複製或刪除 sessions、history，也不會搬移約 20GB 的 session data。"
+                    + "完成後請完全退出並重新啟動 Codex。"
+                ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -227,17 +227,17 @@ private struct RestoreBackupView: View {
             .padding(.vertical, 10)
             .background(.bar)
         }
-        .navigationTitle("Restore Backup")
+        .navigationTitle(L10n.tr("Restore Backup"))
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") {
+                Button(L10n.tr("Cancel")) {
                     appState.cancelRestore()
                 }
                 .disabled(appState.isBusy)
             }
         }
         .alert(
-            "確認 Restore Backup？",
+            L10n.tr("確認 Restore Backup？"),
             isPresented: Binding(
                 get: { pendingBackup != nil },
                 set: { isPresented in
@@ -247,7 +247,7 @@ private struct RestoreBackupView: View {
                 }
             )
         ) {
-            Button("Restore Backup", role: .destructive) {
+            Button(L10n.tr("Restore Backup"), role: .destructive) {
                 guard let pendingBackup else { return }
                 self.pendingBackup = nil
                 Task {
@@ -255,18 +255,19 @@ private struct RestoreBackupView: View {
                 }
             }
             .disabled(appState.isBusy)
-            Button("Cancel", role: .cancel) {
+            Button(L10n.tr("Cancel"), role: .cancel) {
                 pendingBackup = nil
             }
             .disabled(appState.isBusy)
         } message: {
             if let pendingBackup {
-                Text(
-                    "時間：\(formattedDate(pendingBackup.date))\n"
-                        + "大小：\(formattedByteSize(pendingBackup.byteSize))\n\n"
-                        + "這是第二步確認。只會復原 config.toml 與 app-owned model catalog，"
-                        + "不會修改 auth、sessions、history 或 state database。完成後必須完全重啟 Codex。"
-                )
+                Text(verbatim: L10n.tr(
+                    "時間：%@\n大小：%@\n\n"
+                    + "這是第二步確認。只會復原 config.toml 與 app-owned model catalog，"
+                    + "不會修改 auth、sessions、history 或 state database。完成後必須完全重啟 Codex。",
+                    formattedDate(pendingBackup.date),
+                    formattedByteSize(pendingBackup.byteSize)
+                ))
             }
         }
     }
@@ -306,8 +307,11 @@ private struct RestoreBackupRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(backup.date.formatted(date: .abbreviated, time: .shortened)), "
-                + "\(ByteCountFormatter.string(fromByteCount: backup.byteSize, countStyle: .file))"
+            L10n.tr(
+                "%@, %@",
+                backup.date.formatted(date: .abbreviated, time: .shortened),
+                ByteCountFormatter.string(fromByteCount: backup.byteSize, countStyle: .file)
+            )
         )
     }
 }
@@ -321,16 +325,16 @@ private struct UndoJournalRow: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(entry.profileName ?? "Config backup restore")
+                Text(verbatim: entry.profileName ?? L10n.tr("Config backup restore"))
                     .font(.body)
                 if let providerDisplayName = entry.providerDisplayName,
                    let model = entry.model
                 {
-                    Text("\(providerDisplayName) · \(model)")
+                    Text(verbatim: L10n.tr("%@ · %@", providerDisplayName, model))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("config.toml + app-owned model catalog")
+                    Text(verbatim: L10n.tr("config.toml + app-owned model catalog"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -355,7 +359,7 @@ private struct ProfileRow: View {
         HStack(spacing: 10) {
             Image(systemName: item.isActive ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(item.isActive ? .green : .secondary)
-                .accessibilityLabel(item.isActive ? "已套用" : "未套用")
+                .accessibilityLabel(item.isActive ? L10n.tr("已套用") : L10n.tr("未套用"))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name)
@@ -382,7 +386,13 @@ private struct ProfileRow: View {
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(item.name), \(item.providerName), \(item.model), \(item.isActive ? "已套用" : "未套用")"
+            L10n.tr(
+                "%@, %@, %@, %@",
+                item.name,
+                item.providerName,
+                item.model,
+                item.isActive ? L10n.tr("已套用") : L10n.tr("未套用")
+            )
         )
     }
 }
@@ -405,7 +415,7 @@ struct RestartRequiredBanner: View {
                 .foregroundStyle(.orange)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("需要重新啟動 Codex")
+                Text(verbatim: L10n.tr("需要重新啟動 Codex"))
                     .font(.headline)
                 Text(AppState.restartRequiredMessage)
                     .font(.callout)
@@ -415,7 +425,7 @@ struct RestartRequiredBanner: View {
 
             Spacer(minLength: 8)
 
-            Button("隱藏") {
+            Button(L10n.tr("隱藏")) {
                 appState.dismissRestartRequired()
             }
             .buttonStyle(.borderless)
@@ -425,7 +435,9 @@ struct RestartRequiredBanner: View {
         .background(Color.orange.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("需要重新啟動 Codex。\(AppState.restartRequiredMessage)")
+        .accessibilityLabel(
+            L10n.tr("需要重新啟動 Codex。%@", AppState.restartRequiredMessage)
+        )
     }
 }
 
@@ -443,41 +455,41 @@ struct ModelCatalogStatusView: View {
             switch status.state {
             case .pending:
                 Label(
-                    "Codex model catalog：Apply 時建立",
+                    L10n.tr("Codex model catalog：Apply 時建立"),
                     systemImage: "doc.badge.plus"
                 )
                 .foregroundStyle(.secondary)
             case .applied:
                 if let modelCount = status.modelCount {
                     Label(
-                        "已建立 Codex model catalog（\(modelCount) 個 models）",
+                        L10n.tr("已建立 Codex model catalog（%lld 個 models）", modelCount),
                         systemImage: "checkmark.circle.fill"
                     )
                     .foregroundStyle(.green)
                 } else {
                     Label(
-                        "已建立 Codex model catalog",
+                        L10n.tr("已建立 Codex model catalog"),
                         systemImage: "checkmark.circle.fill"
                     )
                     .foregroundStyle(.green)
                 }
             case .restored:
                 Label(
-                    "Codex model catalog：已隨 Undo 復原",
+                    L10n.tr("Codex model catalog：已隨 Undo 復原"),
                     systemImage: "arrow.uturn.backward.circle"
                 )
                 .foregroundStyle(.secondary)
             }
 
             if compact {
-                Text("Apply 後需完全退出並重新啟動 Codex，才能讀取 catalog。")
+                Text(verbatim: L10n.tr("Apply 後需完全退出並重新啟動 Codex，才能讀取 catalog。"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Text(
+                Text(verbatim: L10n.tr(
                     "OpenCode Go 的 All-in-One model picker 包含 DeepSeek 等 custom models；"
                     + "Apply 後需重啟 Codex 才會重新讀取 catalog。"
-                )
+                ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
@@ -490,9 +502,9 @@ private extension OpenCodeGoBridgeStatus {
     var displayName: String {
         switch self {
         case .running:
-            return "Bridge：執行中"
+            return L10n.tr("Bridge：執行中")
         case .stopped:
-            return "Bridge：Apply 時自動啟動"
+            return L10n.tr("Bridge：Apply 時自動啟動")
         }
     }
 
@@ -520,11 +532,11 @@ private struct EmptyStateView: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("選擇或建立 Profile", systemImage: "rectangle.split.3x1")
+            Label(L10n.tr("選擇或建立 Profile"), systemImage: "rectangle.split.3x1")
         } description: {
-            Text("建立 profile 後，可預覽並安全套用 Codex provider 設定。")
+            Text(verbatim: L10n.tr("建立 profile 後，可預覽並安全套用 Codex provider 設定。"))
         } actions: {
-            Button("建立 Profile", action: createProfile)
+            Button(L10n.tr("建立 Profile"), action: createProfile)
                 .buttonStyle(.borderedProminent)
         }
     }

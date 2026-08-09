@@ -573,6 +573,13 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
                     upstreamErrorBody: upstream.body,
                     model: converted.model
                 )
+                OpenCodeGoBridgeDiagnostics.recordUpstreamRejection(
+                    model: converted.model,
+                    statusCode: upstream.statusCode,
+                    normalizedCode: normalized.code,
+                    upstreamErrorBody: upstream.body,
+                    convertedRequestBody: converted.body
+                )
                 return .sse(
                     statusCode: normalized.statusCode,
                     body: OpenCodeGoResponsesEventEncoder.failure(
@@ -1159,5 +1166,121 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
             }
             return true
         }
+    }
+}
+
+/// Local-only upstream rejection breadcrumbs. Never returned to Codex and never
+/// stores Authorization values; request message text is omitted in favor of
+/// role / tool-call shape counts.
+enum OpenCodeGoBridgeDiagnostics {
+    private static let lock = NSLock()
+    private static let maxEntries = 40
+    private static let maxUpstreamMessageChars = 400
+
+    static func recordUpstreamRejection(
+        model: String,
+        statusCode: Int,
+        normalizedCode: String,
+        upstreamErrorBody: Data?,
+        convertedRequestBody: Data
+    ) {
+        let entry: [String: Any] = [
+            "ts": ISO8601DateFormatter().string(from: Date()),
+            "model": model,
+            "upstream_status": statusCode,
+            "normalized_code": normalizedCode,
+            "upstream_message": truncatedUpstreamMessage(from: upstreamErrorBody),
+            "request_shape": requestShapeSummary(from: convertedRequestBody)
+        ]
+        guard JSONSerialization.isValidJSONObject(entry),
+              let line = try? JSONSerialization.data(withJSONObject: entry),
+              var text = String(data: line, encoding: .utf8)
+        else {
+            return
+        }
+        text.append("\n")
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard let url = logURL() else {
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if FileManager.default.fileExists(atPath: url.path),
+               let existing = try? String(contentsOf: url, encoding: .utf8)
+            {
+                var lines = existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                lines.append(String(text.dropLast()))
+                if lines.count > maxEntries {
+                    lines = Array(lines.suffix(maxEntries))
+                }
+                try lines.joined(separator: "\n").appending("\n").write(to: url, atomically: true, encoding: .utf8)
+            } else {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            return
+        }
+    }
+
+    private static func logURL() -> URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("AllInOneCodex", isDirectory: true)
+            .appendingPathComponent("bridge-upstream-rejections.jsonl")
+    }
+
+    private static func truncatedUpstreamMessage(from body: Data?) -> String {
+        guard
+            let body,
+            body.count <= 64 * 1024,
+            let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+        else {
+            return ""
+        }
+        let message = ((object["error"] as? [String: Any])?["message"] as? String)
+            ?? (object["message"] as? String)
+            ?? ""
+        if message.count <= maxUpstreamMessageChars {
+            return message
+        }
+        return String(message.prefix(maxUpstreamMessageChars))
+    }
+
+    private static func requestShapeSummary(from body: Data) -> [String: Any] {
+        guard
+            let root = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+            let messages = root["messages"] as? [[String: Any]]
+        else {
+            return [:]
+        }
+        var roleCounts: [String: Int] = [:]
+        var assistantToolCallBatches = 0
+        var assistantToolCallTotal = 0
+        for message in messages {
+            let role = (message["role"] as? String) ?? "unknown"
+            roleCounts[role, default: 0] += 1
+            if role == "assistant",
+               let toolCalls = message["tool_calls"] as? [[String: Any]],
+               !toolCalls.isEmpty
+            {
+                assistantToolCallBatches += 1
+                assistantToolCallTotal += toolCalls.count
+            }
+        }
+        return [
+            "message_count": messages.count,
+            "roles": roleCounts,
+            "assistant_tool_batches": assistantToolCallBatches,
+            "assistant_tool_calls": assistantToolCallTotal,
+            "has_tools": root["tools"] != nil,
+            "tool_choice": String(describing: root["tool_choice"] ?? NSNull()),
+            "has_thinking": root["thinking"] != nil,
+            "has_response_format": root["response_format"] != nil,
+            "stream": root["stream"] as? Bool ?? false
+        ]
     }
 }

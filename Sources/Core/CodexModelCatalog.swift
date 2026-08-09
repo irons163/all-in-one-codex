@@ -17,21 +17,21 @@ public enum CodexModelCatalogError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .emptyModels:
-            return "The Codex model catalog does not contain any models."
+            return L10n.tr("The Codex model catalog does not contain any models.")
         case .tooManyModels:
-            return "The Codex model catalog contains too many models."
+            return L10n.tr("The Codex model catalog contains too many models.")
         case .duplicateModel:
-            return "The Codex model catalog contains duplicate model entries."
+            return L10n.tr("The Codex model catalog contains duplicate model entries.")
         case .invalidModelIdentifier:
-            return "The selected model cannot be represented safely in the Codex catalog."
+            return L10n.tr("The selected model cannot be represented safely in the Codex catalog.")
         case .invalidSchema:
-            return "The Codex model catalog has an unsupported schema."
+            return L10n.tr("The Codex model catalog has an unsupported schema.")
         case .catalogTooLarge:
-            return "The Codex model catalog exceeds the supported size limit."
+            return L10n.tr("The Codex model catalog exceeds the supported size limit.")
         case .unreadableCatalog:
-            return "The Codex model catalog could not be read safely."
+            return L10n.tr("The Codex model catalog could not be read safely.")
         case .unsafeCatalogPath:
-            return "The Codex model catalog path is unsafe."
+            return L10n.tr("The Codex model catalog path is unsafe.")
         }
     }
 }
@@ -336,11 +336,11 @@ public struct CodexModelCatalog: Codable, Equatable, Sendable {
             supportedReasoningLevels: [
                 CodexModelCatalogReasoningLevel(
                     effort: "none",
-                    description: "Disable Thinking"
+                    description: L10n.tr("Disable Thinking")
                 ),
                 CodexModelCatalogReasoningLevel(
                     effort: "high",
-                    description: "Enabled Thinking"
+                    description: L10n.tr("Enabled Thinking")
                 )
             ],
             shellType: "shell_command",

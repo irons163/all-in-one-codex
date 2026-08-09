@@ -5,6 +5,17 @@ import XCTest
 @testable import AllInOneCodex
 
 final class CodexCoreTests: XCTestCase {
+    func testAppLanguageResolvesSupportedLocalesAndFallsBackToEnglish() {
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "en_US")), .english)
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "zh_TW")), .traditionalChinese)
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "zh_CN")), .simplifiedChinese)
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "fr_FR")), .french)
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "es_ES")), .spanish)
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "ja_JP")), .japanese)
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "ko_KR")), .korean)
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "de_DE")), .english)
+    }
+
     func testProviderCatalogContainsRequiredPresets() throws {
         let openCodeGo = try XCTUnwrap(ProviderCatalog.preset(for: .openCodeGo))
         XCTAssertEqual(openCodeGo.baseURL, "https://opencode.ai/zen/go/v1")
@@ -1692,6 +1703,156 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(messages[1]["role"] as? String, "tool")
         XCTAssertEqual(messages[1]["tool_call_id"] as? String, "call_lookup")
         XCTAssertEqual(messages[1]["content"] as? String, "Sunny")
+    }
+
+    func testPreviousResponseDoesNotDuplicateToolCallsAlreadyInInput() throws {
+        let cache = OpenCodeGoToolCallCache(capacity: 2)
+        cache.store(
+            responseID: "resp_prior",
+            toolCalls: [
+                OpenCodeGoToolCall(
+                    id: "call_lookup",
+                    name: "lookup_weather",
+                    arguments: "{\"city\":\"Taipei\"}"
+                )
+            ],
+            reasoningContent: "cached reasoning that must not duplicate"
+        )
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "previous_response_id": "resp_prior",
+            "input": [
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": "How is the weather?"
+                ],
+                [
+                    "type": "function_call",
+                    "call_id": "call_lookup",
+                    "name": "lookup_weather",
+                    "arguments": "{\"city\":\"Taipei\"}"
+                ],
+                [
+                    "type": "function_call_output",
+                    "call_id": "call_lookup",
+                    "output": "Sunny"
+                ],
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": "Thanks, continue."
+                ]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: request)
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: data,
+            toolCallCache: cache
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+        let assistantToolTurns = messages.filter {
+            ($0["role"] as? String) == "assistant" && ($0["tool_calls"] as? [[String: Any]]) != nil
+        }
+        XCTAssertEqual(assistantToolTurns.count, 1)
+        XCTAssertEqual(messages.map { $0["role"] as? String }, [
+            "user", "assistant", "tool", "user"
+        ])
+        XCTAssertNotEqual(
+            assistantToolTurns[0]["reasoning_content"] as? String,
+            "cached reasoning that must not duplicate"
+        )
+    }
+
+    func testPreviousResponseAcceptsFullHistoryWithoutCache() throws {
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "previous_response_id": "resp_missing_after_restart",
+            "input": [
+                [
+                    "type": "function_call",
+                    "call_id": "call_lookup",
+                    "name": "lookup_weather",
+                    "arguments": "{}"
+                ],
+                [
+                    "type": "function_call_output",
+                    "call_id": "call_lookup",
+                    "output": "Sunny"
+                ]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: request)
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(
+            responseRequest: data,
+            toolCallCache: OpenCodeGoToolCallCache()
+        )
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.map { $0["role"] as? String }, ["assistant", "tool"])
+    }
+
+    func testParallelFunctionCallsMergeIntoOneAssistantMessage() throws {
+        let request: [String: Any] = [
+            "model": "deepseek-v4-flash",
+            "input": [
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": "read both"
+                ],
+                [
+                    "type": "function_call",
+                    "call_id": "call_a",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"cat README.md\"}"
+                ],
+                [
+                    "type": "function_call",
+                    "call_id": "call_b",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"cat package.json\"}"
+                ],
+                [
+                    "type": "function_call_output",
+                    "call_id": "call_a",
+                    "output": "# README"
+                ],
+                [
+                    "type": "function_call_output",
+                    "call_id": "call_b",
+                    "output": "{\"name\":\"demo\"}"
+                ]
+            ],
+            "tools": [[
+                "type": "function",
+                "name": "exec_command",
+                "description": "Run a command",
+                "parameters": [
+                    "type": "object",
+                    "properties": ["cmd": ["type": "string"]],
+                    "required": ["cmd"]
+                ]
+            ]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: request)
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(responseRequest: data)
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.map { $0["role"] as? String }, [
+            "user", "assistant", "tool", "tool"
+        ])
+        let toolCalls = try XCTUnwrap(messages[1]["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.count, 2)
+        XCTAssertEqual(toolCalls.map { $0["id"] as? String }, ["call_a", "call_b"])
+        XCTAssertEqual(messages[1]["reasoning_content"] as? String, "tool call")
     }
 
     func testDeepSeekToolCallWithoutReasoningReplaysExplicitEmptyReasoningContent() throws {

@@ -92,13 +92,13 @@ public enum ProviderRoutingError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidModel:
-            return "The selected model is empty."
+            return L10n.tr("The selected model is empty.")
         case .unknownOpenCodeGoModel:
-            return "This OpenCode Go model is not in the supported capability catalog."
+            return L10n.tr("This OpenCode Go model is not in the supported capability catalog.")
         case .unsupportedOpenCodeGoWireAPI(.anthropicMessages):
-            return "This OpenCode Go model uses the Anthropic Messages API, which the bridge does not support yet."
+            return L10n.tr("This OpenCode Go model uses the Anthropic Messages API, which the bridge does not support yet.")
         case .unsupportedOpenCodeGoWireAPI:
-            return "This OpenCode Go model uses an unsupported provider API."
+            return L10n.tr("This OpenCode Go model uses an unsupported provider API.")
         }
     }
 }

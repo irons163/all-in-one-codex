@@ -39,9 +39,9 @@ public enum SwitchReceiptRepositoryError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .unableToWriteJournal:
-            return "The switch journal could not be written safely."
+            return L10n.tr("The switch journal could not be written safely.")
         case .unableToDeleteJournal:
-            return "The switch journal could not be updated safely."
+            return L10n.tr("The switch journal could not be updated safely.")
         }
     }
 }

@@ -19,7 +19,7 @@ struct MenuBarView: View {
 
             if appState.hasPersistentUndo {
                 Label(
-                    "Persistent Undo：\(appState.receiptJournalEntries.count) 筆",
+                    L10n.tr("Persistent Undo：%lld 筆", appState.receiptJournalEntries.count),
                     systemImage: "arrow.uturn.backward.circle"
                 )
                 .font(.caption)
@@ -28,7 +28,7 @@ struct MenuBarView: View {
 
             if appState.profileItems.contains(where: { $0.requiresLoopbackBridge }) {
                 BridgeStatusBadge(status: appState.bridgeStatus)
-                Text("需要時由 Apply 自動啟動；不需另外手動啟動。")
+                Text(verbatim: L10n.tr("需要時由 Apply 自動啟動；不需另外手動啟動。"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -36,7 +36,7 @@ struct MenuBarView: View {
             Divider()
 
             if appState.profileItems.isEmpty {
-                Text("尚無 profiles")
+                Text(verbatim: L10n.tr("尚無 profiles"))
             } else {
                 ForEach(appState.profileItems) { item in
                     Button {
@@ -63,11 +63,11 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Open Main Window") {
+            Button(L10n.tr("Open Main Window")) {
                 openWindow(id: "main")
             }
 
-            Button("Quit") {
+            Button(L10n.tr("Quit")) {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")

@@ -302,8 +302,18 @@ public struct CodexClientAdapter: ClientAdapter {
     /// Keychain on each app launch.
     public func prepareForUse() throws {
         let snapshot = try readConfiguration()
+        // Codex Desktop may rewrite config.toml and drop our loopback
+        // `openai_base_url` while leaving the preservation markers. Repair it
+        // before bridge startup so preserved sessions keep routing here.
+        if let repaired = Self.repairedPreservedSessionConfiguration(from: snapshot.text),
+           repaired != snapshot.text
+        {
+            try writeConfigurationText(repaired)
+        }
+        let configurationText = (try? readConfiguration().text) ?? snapshot.text
+
         if let preservedConfiguration = Self.preservedSessionBridgeConfiguration(
-            in: snapshot.text
+            in: configurationText
         ) {
             let credential = try credential(for: preservedConfiguration.profileID)
             try configureBridgeForPreservingSessions(
@@ -314,7 +324,7 @@ public struct CodexClientAdapter: ClientAdapter {
             return
         }
 
-        guard Self.activeModelProvider(in: snapshot.text) == ProviderCatalog.openCodeGoBridgeProviderID else {
+        guard Self.activeModelProvider(in: configurationText) == ProviderCatalog.openCodeGoBridgeProviderID else {
             return
         }
         configureLegacyBridgeMode()
@@ -325,12 +335,18 @@ public struct CodexClientAdapter: ClientAdapter {
         let snapshot = try readConfiguration()
         let catalog = try CodexModelCatalog.make(for: profile)
         let projected = try projector.project(original: snapshot.text, profile: profile)
-        let presetName = ProviderCatalog.preset(for: profile.presetID)?.displayName ?? "provider"
+        let presetName = ProviderCatalog.preset(for: profile.presetID)?.displayName
+            ?? L10n.tr("provider")
 
         return SwitchPreview(
             original: snapshot.text,
             projected: projected,
-            summary: "Set Codex to \(presetName) with model \(profile.model) and advertise \(catalog.models.count) models."
+            summary: L10n.tr(
+                "Set Codex to %@ with model %@ and advertise %lld models.",
+                presetName,
+                profile.model,
+                catalog.models.count
+            )
         )
     }
 
@@ -1057,6 +1073,72 @@ public struct CodexClientAdapter: ClientAdapter {
             return nil
         }
         return PreservedSessionBridgeConfiguration(profileID: profileID, route: route)
+    }
+
+    /// Codex Desktop has been observed rewriting `config.toml` and dropping the
+    /// loopback `openai_base_url` while leaving this app's preservation markers.
+    /// Re-insert the owned assignment so `prepareForUse` can start the bridge.
+    static func repairedPreservedSessionConfiguration(from text: String) -> String? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard
+            let activeBegin = lines.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == CodexConfigProjector.activeBeginMarker
+            }),
+            let activeEnd = lines.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == CodexConfigProjector.activeEndMarker
+            }),
+            activeBegin < activeEnd
+        else {
+            return nil
+        }
+
+        let activeRange = activeBegin...activeEnd
+        let activeLines = Array(lines[activeRange])
+        guard
+            activeLines.contains(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == CodexConfigProjector.preserveSessionsMarker
+            }),
+            let markerOffset = activeLines.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == CodexConfigProjector.openAIBaseURLMarker
+            })
+        else {
+            return nil
+        }
+
+        let currentURL = stringAssignment(named: "openai_base_url", in: activeLines)
+        if currentURL == ProviderCatalog.openCodeGoBridgeBaseURL {
+            return nil
+        }
+
+        var repaired = lines
+        let assignment = "openai_base_url = \"\(ProviderCatalog.openCodeGoBridgeBaseURL)\""
+        let markerIndex = activeBegin + markerOffset
+        // Remove any stale top-level openai_base_url inside the active block.
+        var indicesToRemove: [Int] = []
+        for index in activeRange {
+            let code = codeBeforeComment(in: repaired[index]).trimmingCharacters(in: .whitespaces)
+            guard
+                let equalsIndex = code.firstIndex(of: "="),
+                code[..<equalsIndex].trimmingCharacters(in: .whitespaces) == "openai_base_url"
+            else {
+                continue
+            }
+            indicesToRemove.append(index)
+        }
+        for index in indicesToRemove.reversed() {
+            repaired.remove(at: index)
+        }
+        let insertionIndex = min(markerIndex + 1, repaired.count)
+        repaired.insert(assignment, at: insertionIndex)
+        return repaired.joined(separator: "\n")
+    }
+
+    private func writeConfigurationText(_ text: String) throws {
+        try atomicallyWrite(Data(text.utf8), to: configURL)
     }
 
     private static func markerValue(withPrefix prefix: String, in lines: [String]) -> String? {

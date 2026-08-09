@@ -10,11 +10,11 @@ public enum CredentialStoreError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .emptyCredential:
-            return "The credential cannot be empty."
+            return L10n.tr("The credential cannot be empty.")
         case .notFound:
-            return "No credential is stored for this profile."
+            return L10n.tr("No credential is stored for this profile.")
         case .unavailable:
-            return "The credential store is unavailable."
+            return L10n.tr("The credential store is unavailable.")
         }
     }
 }

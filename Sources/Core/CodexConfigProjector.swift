@@ -21,35 +21,35 @@ public enum CodexSwitchError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidProfile:
-            return "The selected provider profile is incomplete."
+            return L10n.tr("The selected provider profile is incomplete.")
         case .malformedManagedMarkers:
-            return "The Codex configuration contains incomplete managed markers."
+            return L10n.tr("The Codex configuration contains incomplete managed markers.")
         case .misplacedActiveMarker:
-            return "The managed active configuration is not before the first TOML table."
+            return L10n.tr("The managed active configuration is not before the first TOML table.")
         case .missingCredential:
-            return "No credential is available for the selected provider profile."
+            return L10n.tr("No credential is available for the selected provider profile.")
         case .unreadableConfiguration:
-            return "The Codex configuration could not be read as UTF-8."
+            return L10n.tr("The Codex configuration could not be read as UTF-8.")
         case .unableToWriteConfiguration:
-            return "The Codex configuration could not be written safely."
+            return L10n.tr("The Codex configuration could not be written safely.")
         case .backupUnavailable:
-            return "The configuration backup is unavailable."
+            return L10n.tr("The configuration backup is unavailable.")
         case .backupIntegrityConflict:
-            return "The configuration backup no longer matches the recorded state."
+            return L10n.tr("The configuration backup no longer matches the recorded state.")
         case .configurationChanged:
-            return "The Codex configuration changed after it was applied, so it cannot be undone safely."
+            return L10n.tr("The Codex configuration changed after it was applied, so it cannot be undone safely.")
         case .modelCatalogChanged:
-            return "The app-owned Codex model catalog changed after it was applied, so it cannot be undone safely."
+            return L10n.tr("The app-owned Codex model catalog changed after it was applied, so it cannot be undone safely.")
         case .foreignModelCatalogPointer:
-            return "The Codex configuration already points to a model catalog that is not owned by this app."
+            return L10n.tr("The Codex configuration already points to a model catalog that is not owned by this app.")
         case .unsafeBackupPath:
-            return "The selected configuration backup path is unsafe."
+            return L10n.tr("The selected configuration backup path is unsafe.")
         case .invalidConfigurationBackup:
-            return "The selected configuration backup is not readable TOML."
+            return L10n.tr("The selected configuration backup is not readable TOML.")
         case .configurationBackupTooLarge:
-            return "The selected configuration backup exceeds the supported size limit."
+            return L10n.tr("The selected configuration backup exceeds the supported size limit.")
         case .foreignOpenAIBaseURL:
-            return "The Codex configuration already has an OpenAI base URL that is not managed by this app."
+            return L10n.tr("The Codex configuration already has an OpenAI base URL that is not managed by this app.")
         }
     }
 }

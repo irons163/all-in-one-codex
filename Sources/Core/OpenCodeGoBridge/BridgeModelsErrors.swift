@@ -52,33 +52,33 @@ public enum OpenCodeGoBridgeError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .portInUse:
-            return "The OpenCode Go bridge port 14556 is already in use."
+            return L10n.tr("The OpenCode Go bridge port 14556 is already in use.")
         case .unableToStart:
-            return "The OpenCode Go bridge could not start."
+            return L10n.tr("The OpenCode Go bridge could not start.")
         case .requestTooLarge:
-            return "The bridge request exceeds the supported size limit."
+            return L10n.tr("The bridge request exceeds the supported size limit.")
         case .contentLengthRequired:
-            return "The bridge requires a Content-Length request body."
+            return L10n.tr("The bridge requires a Content-Length request body.")
         case .invalidContentLength:
-            return "The bridge received an invalid Content-Length header."
+            return L10n.tr("The bridge received an invalid Content-Length header.")
         case .unsupportedContentEncoding:
-            return "The bridge does not support this request content encoding."
+            return L10n.tr("The bridge does not support this request content encoding.")
         case .invalidRequest:
-            return "The bridge received an unsupported Responses request."
+            return L10n.tr("The bridge received an unsupported Responses request.")
         case .unsupportedModel:
-            return "The bridge supports only known OpenCode Go Chat Completions models."
+            return L10n.tr("The bridge supports only known OpenCode Go Chat Completions models.")
         case .missingAuthorization:
-            return "The bridge request did not include provider authorization."
+            return L10n.tr("The bridge request did not include provider authorization.")
         case .missingProviderCredential:
-            return "The bridge has no active provider credential."
+            return L10n.tr("The bridge has no active provider credential.")
         case .sessionRequestLimitReached:
-            return "The bridge has reached its active session request limit."
+            return L10n.tr("The bridge has reached its active session request limit.")
         case .upstreamUnavailable:
-            return "OpenCode Go is temporarily unavailable."
+            return L10n.tr("OpenCode Go is temporarily unavailable.")
         case .upstreamRejected:
-            return "OpenCode Go rejected the request."
+            return L10n.tr("OpenCode Go rejected the request.")
         case .invalidUpstreamResponse:
-            return "OpenCode Go returned an unsupported Chat Completions response."
+            return L10n.tr("OpenCode Go returned an unsupported Chat Completions response.")
         }
     }
 }

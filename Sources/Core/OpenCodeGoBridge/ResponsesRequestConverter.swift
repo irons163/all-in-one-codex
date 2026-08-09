@@ -36,22 +36,40 @@ public enum OpenCodeGoResponsesRequestConverter {
 
         let previousResponseID = root["previous_response_id"] as? String
         let cachedHistory = previousResponseID.flatMap { toolCallCache?.history(for: $0) }
-        if let cachedHistory, !cachedHistory.toolCalls.isEmpty {
-            conversationMessages.append(
-                assistantToolCallMessage(
-                    cachedHistory.toolCalls,
-                    reasoningContent: cachedHistory.reasoningContent,
-                    reasoningContentPresent: cachedHistory.reasoningContentPresent,
-                    requiresThinkingAssistantFields: requiresThinkingAssistantFields
-                )
-            )
-            lastAssistantConversationMessageIndex = conversationMessages.indices.last
+        // Match cc-switch `CodexChatHistoryStore.enrich_request`: restore cached
+        // tool calls only for orphan `function_call_output` items. Codex often
+        // sends `previous_response_id` together with a full input that already
+        // contains the matching function_call items; blindly prepending the
+        // cache duplicates assistant tool history and OpenCode Go returns 400.
+        let existingCallIDs = Set((inputItems ?? []).flatMap(toolCallIDs(in:)))
+        let outputCallIDs = Set((inputItems ?? []).compactMap(toolCallOutputID(in:)))
+        let missingOutputCallIDs = outputCallIDs.subtracting(existingCallIDs)
+        let restoredToolCalls: [OpenCodeGoToolCall]
+        if let cachedHistory, !missingOutputCallIDs.isEmpty {
+            restoredToolCalls = cachedHistory.toolCalls.filter { missingOutputCallIDs.contains($0.id) }
+        } else {
+            restoredToolCalls = []
         }
 
         if let input = root["input"] as? String {
             conversationMessages.append(["role": "user", "content": input])
         } else if let inputItems {
-            for inputItem in inputItems {
+            // Insert restored calls immediately before the first tool output,
+            // matching cc-switch enrich_request ordering.
+            let effectiveInputItems: [[String: Any]]
+            if let cachedHistory, !restoredToolCalls.isEmpty {
+                effectiveInputItems = enrichInputItems(
+                    inputItems,
+                    withRestoredToolCalls: restoredToolCalls,
+                    reasoningContent: cachedHistory.reasoningContent,
+                    reasoningContentPresent: cachedHistory.reasoningContentPresent
+                )
+            } else {
+                effectiveInputItems = inputItems
+            }
+
+            var pendingToolCalls: [OpenCodeGoToolCall] = []
+            for inputItem in effectiveInputItems {
                 try appendChatMessages(
                     from: inputItem,
                     systemMessages: &systemMessages,
@@ -59,18 +77,24 @@ public enum OpenCodeGoResponsesRequestConverter {
                     toolContext: toolConversion.context,
                     requiresThinkingAssistantFields: requiresThinkingAssistantFields,
                     pendingReasoningContent: &pendingReasoningContent,
+                    pendingToolCalls: &pendingToolCalls,
                     lastAssistantConversationMessageIndex: &lastAssistantConversationMessageIndex
                 )
             }
+            flushPendingToolCalls(
+                &pendingToolCalls,
+                pendingReasoningContent: &pendingReasoningContent,
+                conversationMessages: &conversationMessages,
+                lastAssistantConversationMessageIndex: &lastAssistantConversationMessageIndex,
+                requiresThinkingAssistantFields: requiresThinkingAssistantFields
+            )
             attachPendingReasoning(
                 &pendingReasoningContent,
                 to: &conversationMessages,
                 lastAssistantConversationMessageIndex: lastAssistantConversationMessageIndex
             )
-            if previousResponseID != nil,
-               cachedHistory?.toolCalls.isEmpty ?? true,
-               inputItems.contains(where: isToolCallOutput)
-            {
+            let stillMissing = missingOutputCallIDs.subtracting(Set(restoredToolCalls.map(\.id)))
+            if !stillMissing.isEmpty {
                 throw OpenCodeGoBridgeError.invalidRequest
             }
         } else if root["input"] != nil {
@@ -247,6 +271,7 @@ public enum OpenCodeGoResponsesRequestConverter {
         toolContext: OpenCodeGoToolContext,
         requiresThinkingAssistantFields: Bool,
         pendingReasoningContent: inout String?,
+        pendingToolCalls: inout [OpenCodeGoToolCall],
         lastAssistantConversationMessageIndex: inout Int?
     ) throws {
         let type = inputItem["type"] as? String
@@ -259,6 +284,13 @@ public enum OpenCodeGoResponsesRequestConverter {
         }
 
         if type == "compaction_trigger" {
+            flushPendingToolCalls(
+                &pendingToolCalls,
+                pendingReasoningContent: &pendingReasoningContent,
+                conversationMessages: &conversationMessages,
+                lastAssistantConversationMessageIndex: &lastAssistantConversationMessageIndex,
+                requiresThinkingAssistantFields: requiresThinkingAssistantFields
+            )
             conversationMessages.append([
                 "role": "user",
                 "content": """
@@ -276,6 +308,13 @@ public enum OpenCodeGoResponsesRequestConverter {
            let summary = OpenCodeGoCompactionEnvelope.unwrap(encryptedContent),
            !summary.isEmpty
         {
+            flushPendingToolCalls(
+                &pendingToolCalls,
+                pendingReasoningContent: &pendingReasoningContent,
+                conversationMessages: &conversationMessages,
+                lastAssistantConversationMessageIndex: &lastAssistantConversationMessageIndex,
+                requiresThinkingAssistantFields: requiresThinkingAssistantFields
+            )
             conversationMessages.append([
                 "role": "system",
                 "content": "Prior compacted conversation context:\n\(summary)"
@@ -284,6 +323,13 @@ public enum OpenCodeGoResponsesRequestConverter {
         }
 
         if isToolCallOutput(inputItem) {
+            flushPendingToolCalls(
+                &pendingToolCalls,
+                pendingReasoningContent: &pendingReasoningContent,
+                conversationMessages: &conversationMessages,
+                lastAssistantConversationMessageIndex: &lastAssistantConversationMessageIndex,
+                requiresThinkingAssistantFields: requiresThinkingAssistantFields
+            )
             guard let callID = stringValue(inputItem["call_id"] ?? inputItem["tool_call_id"]),
                   !callID.isEmpty
             else {
@@ -301,21 +347,24 @@ public enum OpenCodeGoResponsesRequestConverter {
             guard let toolCall = toolCall(from: inputItem, toolContext: toolContext, kind: type) else {
                 throw OpenCodeGoBridgeError.invalidRequest
             }
-            let reasoning = consumePendingReasoning(
-                inputReasoningContent(from: inputItem),
-                pendingReasoningContent: &pendingReasoningContent
-            )
-            conversationMessages.append(
-                assistantToolCallMessage(
-                    [toolCall],
-                    reasoningContent: reasoning.content,
-                    reasoningContentPresent: reasoning.isPresent,
-                    requiresThinkingAssistantFields: requiresThinkingAssistantFields
-                )
-            )
-            lastAssistantConversationMessageIndex = conversationMessages.indices.last
+            // Match cc-switch: accumulate consecutive function/custom calls into
+            // one assistant message so parallel tool turns stay valid for
+            // DeepSeek / OpenCode Go thinking models.
+            let itemReasoning = inputReasoningContent(from: inputItem)
+            if itemReasoning.isPresent {
+                appendPendingReasoning(itemReasoning.content, to: &pendingReasoningContent)
+            }
+            pendingToolCalls.append(toolCall)
             return
         }
+
+        flushPendingToolCalls(
+            &pendingToolCalls,
+            pendingReasoningContent: &pendingReasoningContent,
+            conversationMessages: &conversationMessages,
+            lastAssistantConversationMessageIndex: &lastAssistantConversationMessageIndex,
+            requiresThinkingAssistantFields: requiresThinkingAssistantFields
+        )
 
         let sourceRole = (inputItem["role"] as? String) ?? "user"
         guard ["system", "developer", "user", "assistant", "tool"].contains(sourceRole) else {
@@ -382,6 +431,64 @@ public enum OpenCodeGoResponsesRequestConverter {
                 lastAssistantConversationMessageIndex = nil
             }
         }
+    }
+
+    /// Inserts restored Responses function_call items before the first tool
+    /// output, mirroring cc-switch `CodexChatHistoryStore.enrich_request`.
+    private static func enrichInputItems(
+        _ inputItems: [[String: Any]],
+        withRestoredToolCalls restoredToolCalls: [OpenCodeGoToolCall],
+        reasoningContent: String?,
+        reasoningContentPresent: Bool
+    ) -> [[String: Any]] {
+        guard !restoredToolCalls.isEmpty else {
+            return inputItems
+        }
+        var enriched: [[String: Any]] = []
+        var inserted = false
+        for item in inputItems {
+            if !inserted, isToolCallOutput(item) {
+                for (index, toolCall) in restoredToolCalls.enumerated() {
+                    var synthetic: [String: Any] = [
+                        "type": "function_call",
+                        "call_id": toolCall.id,
+                        "name": toolCall.name,
+                        "arguments": toolCall.arguments
+                    ]
+                    if index == 0, reasoningContentPresent || reasoningContent != nil {
+                        synthetic["reasoning_content"] = reasoningContent ?? ""
+                    }
+                    enriched.append(synthetic)
+                }
+                inserted = true
+            }
+            enriched.append(item)
+        }
+        return enriched
+    }
+
+    private static func flushPendingToolCalls(
+        _ pendingToolCalls: inout [OpenCodeGoToolCall],
+        pendingReasoningContent: inout String?,
+        conversationMessages: inout [[String: Any]],
+        lastAssistantConversationMessageIndex: inout Int?,
+        requiresThinkingAssistantFields: Bool
+    ) {
+        guard !pendingToolCalls.isEmpty else {
+            return
+        }
+        let reasoningText = pendingReasoningContent
+        pendingReasoningContent = nil
+        conversationMessages.append(
+            assistantToolCallMessage(
+                pendingToolCalls,
+                reasoningContent: reasoningText,
+                reasoningContentPresent: reasoningText != nil,
+                requiresThinkingAssistantFields: requiresThinkingAssistantFields
+            )
+        )
+        pendingToolCalls.removeAll(keepingCapacity: true)
+        lastAssistantConversationMessageIndex = conversationMessages.indices.last
     }
 
     private static func chatContent(
@@ -927,6 +1034,49 @@ public enum OpenCodeGoResponsesRequestConverter {
     private static func isToolCallOutput(_ inputItem: [String: Any]) -> Bool {
         let type = inputItem["type"] as? String
         return type == "function_call_output" || type == "custom_tool_call_output"
+    }
+
+    private static func toolCallOutputID(in inputItem: [String: Any]) -> String? {
+        guard isToolCallOutput(inputItem) else { return nil }
+        return trimmedString(inputItem["call_id"] ?? inputItem["tool_call_id"])
+    }
+
+    /// Collects call IDs already present in the Responses `input`, including
+    /// standalone function/custom calls and assistant messages that embed
+    /// Chat-shaped `tool_calls` or content-part tool calls.
+    private static func toolCallIDs(in inputItem: [String: Any]) -> [String] {
+        let type = inputItem["type"] as? String
+        if type == "function_call" || type == "custom_tool_call" {
+            if let id = trimmedString(inputItem["call_id"] ?? inputItem["id"]) {
+                return [id]
+            }
+            return []
+        }
+
+        guard (inputItem["role"] as? String) == "assistant" else {
+            return []
+        }
+
+        var ids: [String] = []
+        if let toolCalls = inputItem["tool_calls"] as? [[String: Any]] {
+            for toolCall in toolCalls {
+                if let id = trimmedString(toolCall["id"] ?? toolCall["call_id"]) {
+                    ids.append(id)
+                }
+            }
+        }
+        if let parts = inputItem["content"] as? [[String: Any]] {
+            for part in parts {
+                let partType = part["type"] as? String
+                guard partType == "function_call" || partType == "custom_tool_call" else {
+                    continue
+                }
+                if let id = trimmedString(part["call_id"] ?? part["id"]) {
+                    ids.append(id)
+                }
+            }
+        }
+        return ids
     }
 
     private static func isCompactionTrigger(_ inputItem: [String: Any]) -> Bool {

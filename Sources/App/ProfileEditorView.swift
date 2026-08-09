@@ -7,13 +7,13 @@ struct ProfileEditorView: View {
 
     var body: some View {
         Form {
-            Section("Profile") {
-                TextField("Name", text: $draft.name)
+            Section(L10n.tr("Profile")) {
+                TextField(L10n.tr("Name"), text: $draft.name)
                     .textFieldStyle(.roundedBorder)
             }
 
-            Section("Provider") {
-                Picker("Provider", selection: $draft.presetKey) {
+            Section(L10n.tr("Provider")) {
+                Picker(L10n.tr("Provider"), selection: $draft.presetKey) {
                     ForEach(appState.presetOptions) { option in
                         Text(option.name)
                             .tag(option.id)
@@ -21,7 +21,7 @@ struct ProfileEditorView: View {
                 }
 
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    TextField("Model", text: $draft.model)
+                    TextField(L10n.tr("Model"), text: $draft.model)
                         .textFieldStyle(.roundedBorder)
                         .help(route.explanation)
 
@@ -46,16 +46,16 @@ struct ProfileEditorView: View {
 
                         if appState.allowsCustomModels(for: draft.presetKey) {
                             Divider()
-                            Text("OpenRouter 允許直接輸入自訂 model ID")
+                            Text(verbatim: L10n.tr("OpenRouter 允許直接輸入自訂 model ID"))
                         }
                     } label: {
-                        Label("選擇 model", systemImage: "chevron.up.chevron.down")
+                        Label(L10n.tr("選擇 model"), systemImage: "chevron.up.chevron.down")
                     }
                     .fixedSize()
-                    .help("從 preset 的 model catalog 選擇；仍可直接輸入文字。")
+                    .help(L10n.tr("從 preset 的 model catalog 選擇；仍可直接輸入文字。"))
                 }
 
-                LabeledContent("Route") {
+                LabeledContent(L10n.tr("Route")) {
                     Text(route.routeName)
                         .foregroundStyle(route.isKnown ? Color.primary : Color.orange)
                         .multilineTextAlignment(.trailing)
@@ -64,12 +64,12 @@ struct ProfileEditorView: View {
                 if route.bridgeEnabled,
                    let bridgeStatus = route.bridgeStatus
                 {
-                    LabeledContent("Bridge") {
+                    LabeledContent(L10n.tr("Bridge")) {
                         BridgeStatusBadge(status: bridgeStatus)
                     }
                 }
 
-                LabeledContent("Endpoint") {
+                LabeledContent(L10n.tr("Endpoint")) {
                     Text(route.endpoint)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -77,7 +77,7 @@ struct ProfileEditorView: View {
                 }
 
                 if let loopbackEndpoint = route.loopbackEndpoint {
-                    LabeledContent("Loopback") {
+                    LabeledContent(L10n.tr("Loopback")) {
                         Text(loopbackEndpoint)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
@@ -86,7 +86,7 @@ struct ProfileEditorView: View {
                 }
 
                 if let upstreamEndpoint = route.upstreamEndpoint {
-                    LabeledContent("Upstream") {
+                    LabeledContent(L10n.tr("Upstream")) {
                         Text(upstreamEndpoint)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
@@ -104,7 +104,7 @@ struct ProfileEditorView: View {
 
                 if route.bridgeEnabled {
                     Label(
-                        "Bridge 會在 Apply 時由 All-in-One Codex 自動啟動；不需另外手動啟動。",
+                        L10n.tr("Bridge 會在 Apply 時由 All-in-One Codex 自動啟動；不需另外手動啟動。"),
                         systemImage: "bolt.horizontal.circle"
                     )
                     .font(.caption)
@@ -113,7 +113,7 @@ struct ProfileEditorView: View {
 
                 if !route.isKnown {
                     Label(
-                        "Core 會拒絕這個 model；請從清單選擇支援項目或修正輸入。",
+                        L10n.tr("Core 會拒絕這個 model；請從清單選擇支援項目或修正輸入。"),
                         systemImage: "exclamationmark.triangle"
                     )
                     .font(.caption)
@@ -121,19 +121,19 @@ struct ProfileEditorView: View {
                 }
             }
 
-            Section("Session compatibility") {
-                Toggle("保留既有 Codex sessions", isOn: $draft.preserveSessions)
+            Section(L10n.tr("Session compatibility")) {
+                Toggle(L10n.tr("保留既有 Codex sessions"), isOn: $draft.preserveSessions)
 
-                Text(
+                Text(verbatim: L10n.tr(
                     "保留 Codex 內建 openai provider namespace，讓既有 task 在完全重啟 Codex 後仍可見並重新開啟。"
                     + "所有請求會經本機 proxy，API key 仍只由 Keychain 提供。"
-                )
+                ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
                 if draft.preserveSessions {
                     Label(
-                        "使用期間請保持 All-in-One Codex 開啟；正在執行中的 task 不會熱切換。",
+                        L10n.tr("使用期間請保持 All-in-One Codex 開啟；正在執行中的 task 不會熱切換。"),
                         systemImage: "clock.arrow.circlepath"
                     )
                     .font(.caption)
@@ -141,12 +141,12 @@ struct ProfileEditorView: View {
                 }
             }
 
-            Section("Codex model catalog") {
+            Section(L10n.tr("Codex model catalog")) {
                 if let modelCatalogCount {
                     Label(
                         modelCatalogMatches
-                            ? "已建立 Codex model catalog（\(modelCatalogCount) 個 models）"
-                            : "Apply 時建立 Codex model catalog（\(modelCatalogCount) 個 models）",
+                            ? L10n.tr("已建立 Codex model catalog（%lld 個 models）", modelCatalogCount)
+                            : L10n.tr("Apply 時建立 Codex model catalog（%lld 個 models）", modelCatalogCount),
                         systemImage: modelCatalogMatches
                             ? "checkmark.circle.fill"
                             : "doc.badge.plus"
@@ -154,42 +154,42 @@ struct ProfileEditorView: View {
                     .foregroundStyle(modelCatalogMatches ? Color.green : Color.secondary)
                 } else {
                     Label(
-                        "Apply 時建立 Codex model catalog；請選擇有效 model。",
+                        L10n.tr("Apply 時建立 Codex model catalog；請選擇有效 model。"),
                         systemImage: "doc.badge.plus"
                     )
                     .foregroundStyle(.secondary)
                 }
 
-                Text(
+                Text(verbatim: L10n.tr(
                     "OpenCode Go 的 model picker 仍來自 All-in-One source list，包含 DeepSeek 等 custom models；"
                     + "這裡只顯示摘要，不會把完整 catalog JSON 放到主畫面。"
-                )
+                ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                Text("Apply 後 Codex App/CLI 不會熱載入 catalog；請完全退出並重新啟動。保留模式可再開啟既有 task。")
+                Text(verbatim: L10n.tr("Apply 後 Codex App/CLI 不會熱載入 catalog；請完全退出並重新啟動。保留模式可再開啟既有 task。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 if appState.modelCatalogStatus.isApplied, !modelCatalogMatches {
-                    Text("目前已套用的 catalog 對應另一個 profile 或 model；再次 Apply 會更新它。")
+                    Text(verbatim: L10n.tr("目前已套用的 catalog 對應另一個 profile 或 model；再次 Apply 會更新它。"))
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
             }
 
-            Section("Credentials") {
-                SecureField("New API key", text: $draft.apiKey)
+            Section(L10n.tr("Credentials")) {
+                SecureField(L10n.tr("New API key"), text: $draft.apiKey)
                     .textFieldStyle(.roundedBorder)
 
-                Text("只接受新的 API key；儲存成功後欄位會清空。既有 key 不會讀出或顯示。")
+                Text(verbatim: L10n.tr("只接受新的 API key；儲存成功後欄位會清空。既有 key 不會讀出或顯示。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 switch appState.editorCredentialStatus {
                 case .missing:
                     Label(
-                        "尚未設定 API key；Apply 前請先輸入。",
+                        L10n.tr("尚未設定 API key；Apply 前請先輸入。"),
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(.caption)
@@ -200,13 +200,13 @@ struct ProfileEditorView: View {
                             .foregroundStyle(.green)
                         Text("********")
                             .font(.system(.caption, design: .monospaced))
-                        Text("API key 已儲存；輸入新值可替換。")
+                        Text(verbatim: L10n.tr("API key 已儲存；輸入新值可替換。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 case .newValue:
                     Label(
-                        "新的 API key 將在 Save 或 Apply 時儲存。",
+                        L10n.tr("新的 API key 將在 Save 或 Apply 時儲存。"),
                         systemImage: "key.fill"
                     )
                     .font(.caption)
@@ -223,7 +223,7 @@ struct ProfileEditorView: View {
             Section {
                 HStack {
                     if isNew {
-                        Button("Cancel") {
+                        Button(L10n.tr("Cancel")) {
                             appState.cancelCreatingProfile()
                         }
                     }
@@ -233,14 +233,14 @@ struct ProfileEditorView: View {
                     Button {
                         Task { await appState.previewEditor() }
                     } label: {
-                        Label("Preview", systemImage: "eye")
+                        Label(L10n.tr("Preview"), systemImage: "eye")
                     }
                     .disabled(appState.isBusy || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     Button {
                         Task { await appState.saveEditor() }
                     } label: {
-                        Label("Save Profile", systemImage: "square.and.arrow.down")
+                        Label(L10n.tr("Save Profile"), systemImage: "square.and.arrow.down")
                     }
                     .buttonStyle(.bordered)
                     .disabled(appState.isBusy)
@@ -249,7 +249,7 @@ struct ProfileEditorView: View {
                         Button {
                             Task { await appState.applySelectedProfile() }
                         } label: {
-                            Label("Apply", systemImage: "checkmark.circle")
+                            Label(L10n.tr("Apply"), systemImage: "checkmark.circle")
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(
@@ -261,7 +261,7 @@ struct ProfileEditorView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle(isNew ? "New Profile" : (draft.name.isEmpty ? "Profile" : draft.name))
+        .navigationTitle(isNew ? L10n.tr("New Profile") : (draft.name.isEmpty ? L10n.tr("Profile") : draft.name))
         .onChange(of: draft.presetKey) { oldKey, newKey in
             if draft.model.isEmpty || appState.isDefaultModel(draft.model, for: oldKey) {
                 draft.model = appState.defaultModel(for: newKey)
@@ -307,18 +307,18 @@ private struct PreviewSection: View {
     let preview: AppState.PreviewSnapshot
 
     var body: some View {
-        Section("Preview") {
+        Section(L10n.tr("Preview")) {
             Text(preview.summary)
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            LabeledContent("Profile") {
+            LabeledContent(L10n.tr("Profile")) {
                 Text(preview.profileName)
             }
-            LabeledContent("Provider") {
+            LabeledContent(L10n.tr("Provider")) {
                 Text(preview.providerName)
             }
-            LabeledContent("Route") {
+            LabeledContent(L10n.tr("Route")) {
                 Text(preview.routeName)
                     .foregroundStyle(
                         preview.bridgeEnabled && preview.bridgeStatus != .running
@@ -329,37 +329,37 @@ private struct PreviewSection: View {
             if preview.bridgeEnabled,
                let bridgeStatus = preview.bridgeStatus
             {
-                LabeledContent("Bridge") {
+                LabeledContent(L10n.tr("Bridge")) {
                     BridgeStatusBadge(status: bridgeStatus)
                 }
             }
-            LabeledContent("Endpoint") {
+            LabeledContent(L10n.tr("Endpoint")) {
                 Text(preview.endpoint)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
             if let loopbackEndpoint = preview.loopbackEndpoint {
-                LabeledContent("Loopback") {
+                LabeledContent(L10n.tr("Loopback")) {
                     Text(loopbackEndpoint)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
             }
             if let upstreamEndpoint = preview.upstreamEndpoint {
-                LabeledContent("Upstream") {
+                LabeledContent(L10n.tr("Upstream")) {
                     Text(upstreamEndpoint)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
             }
-            LabeledContent("Model") {
+            LabeledContent(L10n.tr("Model")) {
                 Text(preview.model)
             }
-            LabeledContent("Codex model catalog") {
+            LabeledContent(L10n.tr("Codex model catalog")) {
                 if let modelCatalogCount = preview.modelCatalogCount {
-                    Text("Apply 時建立 \(modelCatalogCount) 個 models")
+                    Text(verbatim: L10n.tr("Apply 時建立 %lld 個 models", modelCatalogCount))
                 } else {
-                    Text("Apply 時建立")
+                    Text(verbatim: L10n.tr("Apply 時建立"))
                 }
             }
 
@@ -374,7 +374,7 @@ private struct PreviewSection: View {
                     .font(.callout)
             }
 
-            DisclosureGroup("Projected config.toml（不含 API key）") {
+            DisclosureGroup(L10n.tr("Projected config.toml（不含 API key）")) {
                 TextEditor(text: .constant(preview.projectedConfig))
                     .font(.system(.caption, design: .monospaced))
                     .frame(minHeight: 140)
