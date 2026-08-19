@@ -30,6 +30,9 @@
 "Upstream" = "Origen";
 "Session compatibility" = "Compatibilidad de sesiones";
 "Codex model catalog" = "Catálogo de modelos de Codex";
+"Codex 公開的 models" = "Modelos visibles en Codex";
+"僅目前 model" = "Solo el modelo actual";
+"全部支援的 models" = "Todos los modelos compatibles";
 "Credentials" = "Credenciales";
 "New API key" = "Nueva clave API";
 "Preview" = "Vista previa";
@@ -106,7 +109,9 @@
 "Apply 時建立 Codex model catalog；請選擇有效 model。" = "El catálogo de Codex se creará al aplicar; elige un modelo válido.";
 "OpenCode Go 的 model picker 仍來自 All-in-One source list，包含 DeepSeek 等 custom models；這裡只顯示摘要，不會把完整 catalog JSON 放到主畫面。" = "El selector de modelos de OpenCode Go usa la lista de All-in-One, con modelos como DeepSeek. Aquí solo se muestra un resumen.";
 "Apply 後 Codex App/CLI 不會熱載入 catalog；請完全退出並重新啟動。保留模式可再開啟既有 task。" = "Codex App/CLI no carga el catálogo en caliente después de Apply; sal por completo y reinicia. El modo de conservación permite volver a abrir tareas existentes.";
-"目前已套用的 catalog 對應另一個 profile 或 model；再次 Apply 會更新它。" = "El catálogo aplicado corresponde a otro perfil o modelo; vuelve a aplicar para actualizarlo.";
+"僅目前 model 時，Codex picker 只顯示這個 profile 選取的 model。全部支援時，會公開 preset 可路由的 Responses 與 Chat Completions models，目前選取的排第一。" = "« Solo el modelo actual » deja el selector de Codex en el modelo elegido de este perfil. « Todos los modelos compatibles » publica todos los SKU de Responses y Chat Completions que el preset puede enrutar, con la selección actual primero.";
+"OpenRouter 即使選全部支援，也只會公開你輸入的那一個 model ID。" = "Aunque elijas todos los modelos compatibles, OpenRouter solo publica el ID de modelo que hayas introducido.";
+"目前已套用的 catalog 對應另一個 profile、model 或公開範圍；再次 Apply 會更新它。" = "El catálogo aplicado corresponde a otro perfil, modelo o conjunto publicado; vuelve a aplicar para actualizarlo.";
 "Apply 時建立 %lld 個 models" = "Crear %lld modelos al aplicar";
 "Apply 時建立" = "Se crea al aplicar";
 

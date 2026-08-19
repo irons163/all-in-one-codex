@@ -245,15 +245,37 @@ public struct CodexModelCatalog: Codable, Equatable, Sendable {
         }
     }
 
-    /// Builds the selectable model list for one provider profile. Only the
-    /// profile's current model is advertised, so Codex Desktop does not grow a
-    /// picker of every OpenCode Go SKU. Switch models in All-in-One, then Apply.
+    /// Builds the selectable model list for one provider profile.
+    ///
+    /// `selectedModel` advertises only the current model. `allSupported`
+    /// advertises every Responses/Chat SKU the preset can route, with the
+    /// current model first. OpenRouter still only has the entered model ID.
     public static func make(for profile: ProviderProfile) throws -> CodexModelCatalog {
         _ = try ProviderCatalog.route(for: profile)
-        let modelID = profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelIDs = advertisedModelIDs(for: profile)
         return try CodexModelCatalog(
-            models: [entry(for: modelID, priority: 1_000)]
+            models: modelIDs.enumerated().map { index, modelID in
+                entry(for: modelID, priority: 1_000 + index)
+            }
         )
+    }
+
+    public static func advertisedModelIDs(for profile: ProviderProfile) -> [String] {
+        let selected = profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard profile.catalogScope == .allSupported else {
+            return [selected]
+        }
+
+        switch profile.presetID {
+        case .openCodeGo:
+            var ids = [selected]
+            for modelID in bridgeModelIDs where modelID != selected {
+                ids.append(modelID)
+            }
+            return ids
+        case .openRouter:
+            return [selected]
+        }
     }
 
     /// The local bridge serves exactly this catalog-derived model list through

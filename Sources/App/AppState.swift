@@ -29,35 +29,44 @@ final class AppState: ObservableObject {
         let modelCount: Int?
         let profileID: UUID?
         let model: String?
+        let catalogScope: CodexModelCatalogScope?
 
         static let pending = ModelCatalogStatus(
             state: .pending,
             modelCount: nil,
             profileID: nil,
-            model: nil
+            model: nil,
+            catalogScope: nil
         )
 
         static let restored = ModelCatalogStatus(
             state: .restored,
             modelCount: nil,
             profileID: nil,
-            model: nil
+            model: nil,
+            catalogScope: nil
         )
 
         var isApplied: Bool {
             state == .applied
         }
 
-        func matches(profileID candidateProfileID: UUID?, model candidateModel: String) -> Bool {
+        func matches(
+            profileID candidateProfileID: UUID?,
+            model candidateModel: String,
+            catalogScope candidateScope: CodexModelCatalogScope
+        ) -> Bool {
             guard
                 state == .applied,
                 let profileID,
-                let model
+                let model,
+                let catalogScope
             else {
                 return false
             }
             return profileID == candidateProfileID
                 && model == candidateModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                && catalogScope == candidateScope
         }
     }
 
@@ -100,6 +109,7 @@ final class AppState: ObservableObject {
         var presetKey: String
         var model: String
         var preserveSessions: Bool
+        var catalogScope: CodexModelCatalogScope
         /// This is write-only from the UI's point of view.
         var apiKey: String
 
@@ -109,6 +119,7 @@ final class AppState: ObservableObject {
             presetKey: String = "",
             model: String = "",
             preserveSessions: Bool = false,
+            catalogScope: CodexModelCatalogScope = .selectedModel,
             apiKey: String = ""
         ) {
             self.id = id
@@ -116,6 +127,7 @@ final class AppState: ObservableObject {
             self.presetKey = presetKey
             self.model = model
             self.preserveSessions = preserveSessions
+            self.catalogScope = catalogScope
             self.apiKey = apiKey
         }
     }
@@ -291,7 +303,11 @@ final class AppState: ObservableObject {
         presetOptions.first { $0.id == presetKey }?.allowsCustomModels ?? false
     }
 
-    func modelCatalogCount(for presetKey: String, model: String) -> Int? {
+    func modelCatalogCount(
+        for presetKey: String,
+        model: String,
+        catalogScope: CodexModelCatalogScope = .selectedModel
+    ) -> Int? {
         guard let presetID = corePresetID(for: presetKey) else {
             return nil
         }
@@ -305,7 +321,8 @@ final class AppState: ObservableObject {
             let profile = ProviderProfile(
                 name: "Catalog preview",
                 presetID: presetID,
-                model: trimmedModel
+                model: trimmedModel,
+                catalogScope: catalogScope
             )
             return try CodexModelCatalog.make(for: profile).models.count
         } catch {
@@ -392,6 +409,7 @@ final class AppState: ObservableObject {
             presetKey: presetKey(for: profile.presetID),
             model: profile.model,
             preserveSessions: profile.preserveSessions,
+            catalogScope: profile.catalogScope,
             apiKey: ""
         )
         refreshCredentialAvailability(for: profile.id)
@@ -732,11 +750,13 @@ final class AppState: ObservableObject {
                 modelCount: didWriteModelCatalog
                     ? modelCatalogCount(
                         for: presetKey(for: profile.presetID),
-                        model: profile.model
+                        model: profile.model,
+                        catalogScope: profile.catalogScope
                     )
                     : nil,
                 profileID: didWriteModelCatalog ? profile.id : nil,
-                model: didWriteModelCatalog ? profile.model : nil
+                model: didWriteModelCatalog ? profile.model : nil,
+                catalogScope: didWriteModelCatalog ? profile.catalogScope : nil
             )
             restartRequired = true
             rebuildProfileItems()
@@ -845,6 +865,7 @@ final class AppState: ObservableObject {
             presetID: presetID,
             model: model,
             preserveSessions: draft.preserveSessions,
+            catalogScope: draft.catalogScope,
             createdAt: existing?.createdAt ?? now,
             updatedAt: now
         )
@@ -887,7 +908,8 @@ final class AppState: ObservableObject {
         ]
         let catalogModelCount = modelCatalogCount(
             for: presetKey(for: profile.presetID),
-            model: profile.model
+            model: profile.model,
+            catalogScope: profile.catalogScope
         )
         if let catalogModelCount {
             changes.append(

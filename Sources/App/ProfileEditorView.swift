@@ -142,6 +142,13 @@ struct ProfileEditorView: View {
             }
 
             Section(L10n.tr("Codex model catalog")) {
+                Picker(L10n.tr("Codex 公開的 models"), selection: $draft.catalogScope) {
+                    Text(L10n.tr("僅目前 model"))
+                        .tag(CodexModelCatalogScope.selectedModel)
+                    Text(L10n.tr("全部支援的 models"))
+                        .tag(CodexModelCatalogScope.allSupported)
+                }
+
                 if let modelCatalogCount {
                     Label(
                         modelCatalogMatches
@@ -161,6 +168,21 @@ struct ProfileEditorView: View {
                 }
 
                 Text(verbatim: L10n.tr(
+                    "僅目前 model 時，Codex picker 只顯示這個 profile 選取的 model。"
+                    + "全部支援時，會公開 preset 可路由的 Responses 與 Chat Completions models，目前選取的排第一。"
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                if appState.allowsCustomModels(for: draft.presetKey) {
+                    Text(verbatim: L10n.tr(
+                        "OpenRouter 即使選全部支援，也只會公開你輸入的那一個 model ID。"
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Text(verbatim: L10n.tr(
                     "OpenCode Go 的 model picker 仍來自 All-in-One source list，包含 DeepSeek 等 custom models；"
                     + "這裡只顯示摘要，不會把完整 catalog JSON 放到主畫面。"
                 ))
@@ -172,7 +194,7 @@ struct ProfileEditorView: View {
                     .foregroundStyle(.secondary)
 
                 if appState.modelCatalogStatus.isApplied, !modelCatalogMatches {
-                    Text(verbatim: L10n.tr("目前已套用的 catalog 對應另一個 profile 或 model；再次 Apply 會更新它。"))
+                    Text(verbatim: L10n.tr("目前已套用的 catalog 對應另一個 profile、model 或公開範圍；再次 Apply 會更新它。"))
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
@@ -291,14 +313,16 @@ struct ProfileEditorView: View {
     private var modelCatalogCount: Int? {
         appState.modelCatalogCount(
             for: draft.presetKey,
-            model: draft.model
+            model: draft.model,
+            catalogScope: draft.catalogScope
         )
     }
 
     private var modelCatalogMatches: Bool {
         appState.modelCatalogStatus.matches(
             profileID: draft.id,
-            model: draft.model
+            model: draft.model,
+            catalogScope: draft.catalogScope
         )
     }
 }

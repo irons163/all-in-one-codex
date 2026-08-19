@@ -65,6 +65,7 @@ final class CodexCoreTests: XCTestCase {
             from: Data(legacyJSON.utf8)
         )
         XCTAssertFalse(legacy.preserveSessions)
+        XCTAssertEqual(legacy.catalogScope, .selectedModel)
 
         let preserving = ProviderProfile(
             id: profileID,
@@ -81,6 +82,44 @@ final class CodexCoreTests: XCTestCase {
         )
         XCTAssertEqual(roundTripped, preserving)
         XCTAssertTrue(roundTripped.preserveSessions)
+        XCTAssertEqual(roundTripped.catalogScope, .selectedModel)
+    }
+
+    func testProviderProfileCatalogScopeDefaultsToSelectedModelAndRoundTripsAllSupported() throws {
+        let profileID = UUID(uuidString: "5F15F99C-8CFB-4778-9B4C-DFB3A5AF7C51")!
+        let legacyJSON = """
+        {
+          "id": "\(profileID.uuidString)",
+          "name": "Legacy profile",
+          "presetID": "openCodeGo",
+          "model": "glm-5.2",
+          "preserveSessions": false,
+          "createdAt": 1700000000,
+          "updatedAt": 1700000100
+        }
+        """
+
+        let legacy = try JSONDecoder().decode(
+            ProviderProfile.self,
+            from: Data(legacyJSON.utf8)
+        )
+        XCTAssertEqual(legacy.catalogScope, .selectedModel)
+
+        let advertisingAll = ProviderProfile(
+            id: profileID,
+            name: "All models profile",
+            presetID: .openCodeGo,
+            model: "deepseek-v4-flash",
+            catalogScope: .allSupported,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let roundTripped = try JSONDecoder().decode(
+            ProviderProfile.self,
+            from: JSONEncoder().encode(advertisingAll)
+        )
+        XCTAssertEqual(roundTripped, advertisingAll)
+        XCTAssertEqual(roundTripped.catalogScope, .allSupported)
     }
 
     func testCodexModelCatalogUsesCCSwitchCompatibleSchemaForSelectedOpenCodeGoModel() throws {
@@ -116,6 +155,32 @@ final class CodexCoreTests: XCTestCase {
 
         XCTAssertEqual(catalog.models.map(\.slug), ["vendor/custom-model"])
         XCTAssertEqual(catalog.models.first?.displayName, "vendor/custom-model")
+    }
+
+    func testCodexModelCatalogAdvertisesAllSupportedOpenCodeGoModelsWithSelectionFirst() throws {
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "deepseek-v4-flash",
+            catalogScope: .allSupported
+        )
+        let catalog = try CodexModelCatalog.make(for: profile)
+        let slugs = catalog.models.map(\.slug)
+
+        XCTAssertEqual(slugs.first, "deepseek-v4-flash")
+        XCTAssertEqual(slugs.count, CodexModelCatalog.bridgeModelIDs.count)
+        XCTAssertEqual(Set(slugs), Set(CodexModelCatalog.bridgeModelIDs))
+        XCTAssertFalse(slugs.contains("qwen3.8-max"))
+    }
+
+    func testCodexModelCatalogAllSupportedOpenRouterStillUsesTheEnteredModelOnly() throws {
+        let profile = makeProfile(
+            presetID: .openRouter,
+            model: "vendor/custom-model",
+            catalogScope: .allSupported
+        )
+        let catalog = try CodexModelCatalog.make(for: profile)
+
+        XCTAssertEqual(catalog.models.map(\.slug), ["vendor/custom-model"])
     }
 
     func testProjectsBothPresetsWithCommandBackedAuthentication() throws {
@@ -3430,13 +3495,15 @@ final class CodexCoreTests: XCTestCase {
     private func makeProfile(
         presetID: ProviderPresetID,
         model: String? = nil,
-        preserveSessions: Bool = false
+        preserveSessions: Bool = false,
+        catalogScope: CodexModelCatalogScope = .selectedModel
     ) -> ProviderProfile {
         ProviderProfile(
             name: "Test profile",
             presetID: presetID,
             model: model,
             preserveSessions: preserveSessions,
+            catalogScope: catalogScope,
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
         )

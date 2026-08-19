@@ -262,6 +262,16 @@ public enum ProviderCatalog {
     }
 }
 
+/// How many models this profile writes into Codex's external catalog.
+///
+/// `selectedModel` keeps the Codex picker aligned with All-in-One.
+/// `allSupported` advertises every Responses/Chat SKU the preset can route,
+/// so Codex can switch among them without another Apply.
+public enum CodexModelCatalogScope: String, Codable, Hashable, CaseIterable, Sendable {
+    case selectedModel
+    case allSupported
+}
+
 /// A user-created provider configuration. Its credential is kept separately in Keychain.
 public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
     public let id: UUID
@@ -272,6 +282,7 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
     /// identity and routes requests through the authenticated local bridge so
     /// existing Codex session history can remain associated with that identity.
     public var preserveSessions: Bool
+    public var catalogScope: CodexModelCatalogScope
     public let createdAt: Date
     public var updatedAt: Date
 
@@ -281,6 +292,7 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
         presetID: ProviderPresetID,
         model: String? = nil,
         preserveSessions: Bool = false,
+        catalogScope: CodexModelCatalogScope = .selectedModel,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -289,6 +301,7 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
         self.presetID = presetID
         self.model = model ?? ProviderCatalog.preset(for: presetID)?.defaultModel ?? ""
         self.preserveSessions = preserveSessions
+        self.catalogScope = catalogScope
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -299,13 +312,15 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
         case presetID
         case model
         case preserveSessions
+        case catalogScope
         case createdAt
         case updatedAt
     }
 
     /// Profiles persisted before session preservation existed deliberately
     /// decode as opt-out, rather than failing migration or changing their
-    /// routing behavior.
+    /// routing behavior. Missing catalog scope defaults to the selected model
+    /// so existing profiles do not suddenly flood the Codex picker.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -316,6 +331,10 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
             Bool.self,
             forKey: .preserveSessions
         ) ?? false
+        catalogScope = try container.decodeIfPresent(
+            CodexModelCatalogScope.self,
+            forKey: .catalogScope
+        ) ?? .selectedModel
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
@@ -327,6 +346,7 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
         try container.encode(presetID, forKey: .presetID)
         try container.encode(model, forKey: .model)
         try container.encode(preserveSessions, forKey: .preserveSessions)
+        try container.encode(catalogScope, forKey: .catalogScope)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
     }
