@@ -245,25 +245,14 @@ public struct CodexModelCatalog: Codable, Equatable, Sendable {
         }
     }
 
-    /// Builds the selectable model list for one provider profile. OpenCode Go
-    /// advertises every supported Responses/Chat descriptor; an OpenRouter
-    /// profile advertises its selected custom model without serializing any
-    /// connection or credential data.
+    /// Builds the selectable model list for one provider profile. Only the
+    /// profile's current model is advertised, so Codex Desktop does not grow a
+    /// picker of every OpenCode Go SKU. Switch models in All-in-One, then Apply.
     public static func make(for profile: ProviderProfile) throws -> CodexModelCatalog {
         _ = try ProviderCatalog.route(for: profile)
-        let modelIDs: [String]
-
-        switch profile.presetID {
-        case .openCodeGo:
-            modelIDs = bridgeModelIDs
-        case .openRouter:
-            modelIDs = [profile.model.trimmingCharacters(in: .whitespacesAndNewlines)]
-        }
-
+        let modelID = profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
         return try CodexModelCatalog(
-            models: modelIDs.enumerated().map { index, modelID in
-                entry(for: modelID, priority: 1_000 + index)
-            }
+            models: [entry(for: modelID, priority: 1_000)]
         )
     }
 

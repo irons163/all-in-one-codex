@@ -83,29 +83,18 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertTrue(roundTripped.preserveSessions)
     }
 
-    func testCodexModelCatalogUsesCCSwitchCompatibleSchemaAndOpenCodeGoModels() throws {
-        let catalog = try CodexModelCatalog.make(
-            for: makeProfile(presetID: .openCodeGo)
-        )
+    func testCodexModelCatalogUsesCCSwitchCompatibleSchemaForSelectedOpenCodeGoModel() throws {
+        let profile = makeProfile(presetID: .openCodeGo, model: "deepseek-v4-flash")
+        let catalog = try CodexModelCatalog.make(for: profile)
         let data = try catalog.encodedData()
         let decoded = try CodexModelCatalog.decodeValidated(from: data)
-        let modelIDs = Set(catalog.models.map(\.slug))
-        let expectedIDs = Set(
-            ProviderCatalog.openCodeGoModels
-                .filter {
-                    $0.wireAPI == .responses || $0.wireAPI == .chatCompletions
-                }
-                .map(\.modelID)
-        )
 
         XCTAssertEqual(decoded, catalog)
-        XCTAssertEqual(modelIDs, expectedIDs)
-        XCTAssertEqual(catalog.models.count, 12)
-        XCTAssertTrue(modelIDs.contains("gpt-5.6-luna"))
-        XCTAssertTrue(modelIDs.contains("deepseek-v4-flash"))
-        XCTAssertTrue(modelIDs.contains("deepseek-v4-pro"))
+        XCTAssertEqual(catalog.models.map(\.slug), ["deepseek-v4-flash"])
+        XCTAssertFalse(catalog.models.contains { $0.slug == "kimi-k3" })
+        XCTAssertFalse(catalog.models.contains { $0.slug == "glm-5.1" })
 
-        let flash = try XCTUnwrap(catalog.models.first { $0.slug == "deepseek-v4-flash" })
+        let flash = try XCTUnwrap(catalog.models.first)
         XCTAssertEqual(flash.displayName, "deepseek-v4-flash")
         XCTAssertEqual(flash.description, "deepseek-v4-flash")
         XCTAssertEqual(flash.shellType, "shell_command")
@@ -2384,6 +2373,48 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(route.baseURL, ProviderCatalog.openCodeGoBridgeBaseURL)
         XCTAssertEqual(route.upstreamBaseURL, ProviderCatalog.openCodeGoOfficialBaseURL)
         XCTAssertEqual(route.upstreamWireAPI, .chatCompletions)
+    }
+
+    func testPrepareForUseRestoresStrippedPreserveOpenAIBaseURL() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let configURL = try makeCodexConfigurationURL(in: directoryURL)
+        let profileID = UUID(uuidString: "EE3ECF2B-67BB-43A4-9F6A-B3FD0F0E2375")!
+        let profile = ProviderProfile(
+            id: profileID,
+            name: "Marker profile",
+            presetID: .openCodeGo,
+            model: "deepseek-v4-pro",
+            preserveSessions: true,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        var projected = try CodexConfigProjector().project(
+            original: "approval_policy = \"never\"\n",
+            profile: profile
+        )
+        projected = projected.replacingOccurrences(
+            of: "openai_base_url = \"\(ProviderCatalog.openCodeGoBridgeBaseURL)\"\n",
+            with: ""
+        )
+        XCTAssertFalse(projected.contains("openai_base_url ="))
+        try Data(projected.utf8).write(to: configURL)
+
+        let credentials = FakeCredentialStore()
+        try credentials.save(Data("marker-selected-key".utf8), for: profile.id)
+        let bridge = ConfigurableFakeBridgeManager()
+        let adapter = CodexClientAdapter(
+            configURL: configURL,
+            credentialStore: credentials,
+            bridgeManager: bridge
+        )
+
+        try adapter.prepareForUse()
+        let restored = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertTrue(
+            restored.contains("openai_base_url = \"\(ProviderCatalog.openCodeGoBridgeBaseURL)\"")
+        )
+        XCTAssertEqual(bridge.events, ["configure-preserve", "ensure"])
     }
 
     func testChatApplyEnsuresBridgeBeforeConfigurationAndDirectApplyDoesNot() throws {

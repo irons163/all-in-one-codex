@@ -1293,3 +1293,75 @@ private struct CatalogTransaction {
     let originalExisted: Bool
     let afterExisted: Bool
 }
+
+/// Re-runs preserve-session launch preparation when Codex rewrites `config.toml`.
+///
+/// Codex Desktop has been observed dropping the loopback `openai_base_url`
+/// while leaving this app's preservation markers. Without that assignment,
+/// ChatGPT-account sessions send third-party model IDs to OpenAI's cloud and
+/// fail with "not supported when using Codex with a ChatGPT account."
+public final class CodexPreservedSessionConfigurationWatch: @unchecked Sendable {
+    private let adapter: CodexClientAdapter
+    private let queue = DispatchQueue(label: "com.allinonecodex.preserve-config-watch")
+    private var source: DispatchSourceFileSystemObject?
+    private var isHandlingChange = false
+
+    public init(adapter: CodexClientAdapter) {
+        self.adapter = adapter
+    }
+
+    deinit {
+        stop()
+    }
+
+    public func start() {
+        queue.async { [weak self] in
+            self?.armWatch()
+        }
+    }
+
+    public func stop() {
+        queue.sync {
+            disarmWatch()
+        }
+    }
+
+    private func armWatch() {
+        disarmWatch()
+        let descriptor = adapter.configURL.path.withCString { pointer in
+            Darwin.open(pointer, O_EVTONLY)
+        }
+        guard descriptor >= 0 else {
+            return
+        }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .extend, .rename, .delete, .attrib],
+            queue: queue
+        )
+        source.setEventHandler { [weak self] in
+            self?.handleChange()
+        }
+        source.setCancelHandler {
+            Darwin.close(descriptor)
+        }
+        self.source = source
+        source.resume()
+    }
+
+    private func disarmWatch() {
+        source?.cancel()
+        source = nil
+    }
+
+    private func handleChange() {
+        guard !isHandlingChange else {
+            return
+        }
+        isHandlingChange = true
+        defer { isHandlingChange = false }
+        try? adapter.prepareForUse()
+        armWatch()
+    }
+}

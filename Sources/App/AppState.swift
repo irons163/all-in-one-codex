@@ -223,6 +223,7 @@ final class AppState: ObservableObject {
     private var credentialAvailability: [UUID: Bool] = [:]
     private var lastReceipt: SwitchReceipt?
     private var hasLoadedProfiles = false
+    private var preservedSessionConfigurationWatch: CodexPreservedSessionConfigurationWatch?
 
     init(
         profileRepository: ProfileRepository = ProfileRepository(),
@@ -441,8 +442,10 @@ final class AppState: ObservableObject {
             // from being loaded below.
             try clientAdapter.prepareForUse()
             bridgeStatus = clientAdapter.bridgeStatus
+            startPreservedSessionConfigurationWatch()
         } catch {
             bridgeStatus = clientAdapter.bridgeStatus
+            startPreservedSessionConfigurationWatch()
             preparationError = error
         }
 
@@ -738,6 +741,7 @@ final class AppState: ObservableObject {
             restartRequired = true
             rebuildProfileItems()
             statusMessage = Self.restartRequiredMessage
+            startPreservedSessionConfigurationWatch()
             await persistReceipt(receipt, profile: profile)
             await refreshRestoreData()
         } catch {
@@ -778,6 +782,17 @@ final class AppState: ObservableObject {
 
     private var codexAdapter: CodexClientAdapter? {
         clientAdapter as? CodexClientAdapter
+    }
+
+    private func startPreservedSessionConfigurationWatch() {
+        preservedSessionConfigurationWatch?.stop()
+        preservedSessionConfigurationWatch = nil
+        guard let adapter = codexAdapter else {
+            return
+        }
+        let watch = CodexPreservedSessionConfigurationWatch(adapter: adapter)
+        preservedSessionConfigurationWatch = watch
+        watch.start()
     }
 
     private func ensureCredentialForApply(
