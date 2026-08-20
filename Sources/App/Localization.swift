@@ -1,5 +1,8 @@
 import Combine
 import Foundation
+import SwiftUI
+
+private final class LocalizationBundleToken: NSObject {}
 
 /// The languages this app ships localizations for. Unsupported system
 /// languages deliberately fall back to English (the development language).
@@ -35,30 +38,49 @@ enum AppLanguage: String, CaseIterable, Sendable {
         Locale(identifier: rawValue)
     }
 
-    private var localizationBundle: Bundle {
-        guard
-            let path = Bundle.main.path(forResource: rawValue, ofType: "lproj"),
-            let bundle = Bundle(path: path)
-        else {
-            return Bundle.main
+    /// The app bundle that actually contains `*.lproj`. `Bundle.main` can be
+    /// the test bundle, or can resolve the development language against the
+    /// system locale instead of the in-app language picker.
+    private static let resourceBundle = Bundle(for: LocalizationBundleToken.self)
+
+    private static let missingValue = "⟦all-in-one.missing⟧"
+
+    fileprivate var localizationBundle: Bundle? {
+        let bundle = Self.resourceBundle
+        if let url = bundle.url(
+            forResource: "Localizable",
+            withExtension: "strings",
+            subdirectory: nil,
+            localization: rawValue
+        ) {
+            return Bundle(url: url.deletingLastPathComponent())
         }
-        return bundle
+        if let path = bundle.path(forResource: rawValue, ofType: "lproj") {
+            return Bundle(path: path)
+        }
+        return nil
     }
 
     func localizedString(forKey key: String) -> String {
-        let localized = localizationBundle.localizedString(
-            forKey: key,
-            value: nil,
-            table: nil
-        )
-        if localized != key || self == .english {
+        if let localized = lookup(key, in: localizationBundle) {
             return localized
         }
-        return AppLanguage.english.localizationBundle.localizedString(
+        if self != .english, let localized = lookup(key, in: AppLanguage.english.localizationBundle) {
+            return localized
+        }
+        return key
+    }
+
+    private func lookup(_ key: String, in bundle: Bundle?) -> String? {
+        guard let bundle else {
+            return nil
+        }
+        let localized = bundle.localizedString(
             forKey: key,
-            value: nil,
+            value: Self.missingValue,
             table: nil
         )
+        return localized == Self.missingValue ? nil : localized
     }
 
     /// Resolves a concrete app language from a locale, including the script
@@ -162,5 +184,15 @@ enum L10n {
         let format = language.localizedString(forKey: key)
         guard !args.isEmpty else { return format }
         return String(format: format, locale: language.locale, arguments: args)
+    }
+}
+
+extension View {
+    /// Pins SwiftUI's locale to the in-app language and rebuilds the tree so
+    /// views that call `L10n.tr` without reading `AppSettings` still refresh.
+    func applyingAppLanguage(_ language: AppLanguage) -> some View {
+        self
+            .environment(\.locale, language.locale)
+            .id(language)
     }
 }

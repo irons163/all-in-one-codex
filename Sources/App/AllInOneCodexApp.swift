@@ -11,6 +11,7 @@ struct AllInOneCodexApp: App {
             ContentView()
                 .environmentObject(appState)
                 .environmentObject(appSettings)
+                .applyingAppLanguage(appSettings.language)
                 .preferredColorScheme(appSettings.colorScheme)
         }
 
@@ -18,6 +19,7 @@ struct AllInOneCodexApp: App {
             MenuBarView()
                 .environmentObject(appState)
                 .environmentObject(appSettings)
+                .applyingAppLanguage(appSettings.language)
                 .preferredColorScheme(appSettings.colorScheme)
         }
         .menuBarExtraStyle(.menu)
@@ -25,6 +27,7 @@ struct AllInOneCodexApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appSettings)
+                .applyingAppLanguage(appSettings.language)
                 .preferredColorScheme(appSettings.colorScheme)
         }
     }

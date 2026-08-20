@@ -35,6 +35,45 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(Set(AppAppearance.allCases), [.system, .light, .dark])
     }
 
+    func testCatalogScopeLabelsAreTranslatedForEverySupportedLanguage() {
+        XCTAssertEqual(
+            AppLanguage.english.localizedString(forKey: "僅目前 model"),
+            "Current model only"
+        )
+        XCTAssertEqual(
+            AppLanguage.traditionalChinese.localizedString(forKey: "僅目前 model"),
+            "僅目前 model"
+        )
+        XCTAssertEqual(
+            AppLanguage.simplifiedChinese.localizedString(forKey: "僅目前 model"),
+            "仅当前模型"
+        )
+        XCTAssertEqual(
+            AppLanguage.french.localizedString(forKey: "僅目前 model"),
+            "Modèle actuel uniquement"
+        )
+        XCTAssertEqual(
+            AppLanguage.spanish.localizedString(forKey: "僅目前 model"),
+            "Solo el modelo actual"
+        )
+        XCTAssertEqual(
+            AppLanguage.japanese.localizedString(forKey: "僅目前 model"),
+            "現在のモデルのみ"
+        )
+        XCTAssertEqual(
+            AppLanguage.korean.localizedString(forKey: "僅目前 model"),
+            "현재 모델만"
+        )
+        XCTAssertEqual(
+            AppLanguage.japanese.localizedString(forKey: "全部支援的 models"),
+            "対応モデルすべて"
+        )
+        XCTAssertEqual(
+            AppLanguage.english.localizedString(forKey: "a-key-that-does-not-exist"),
+            "a-key-that-does-not-exist"
+        )
+    }
+
     func testProviderCatalogContainsRequiredPresets() throws {
         let openCodeGo = try XCTUnwrap(ProviderCatalog.preset(for: .openCodeGo))
         XCTAssertEqual(openCodeGo.baseURL, "https://opencode.ai/zen/go/v1")
