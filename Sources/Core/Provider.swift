@@ -21,12 +21,20 @@ public enum ProviderWireAPI: String, Codable, CaseIterable, Sendable {
 public struct ProviderModelDescriptor: Identifiable, Hashable, Sendable {
     public let modelID: String
     public let wireAPI: ProviderWireAPI
+    /// When true, the Codex catalog advertises image input so Desktop does not
+    /// strip screenshots locally before the request reaches the provider.
+    public let supportsImages: Bool
 
     public var id: String { modelID }
 
-    public init(modelID: String, wireAPI: ProviderWireAPI) {
+    public init(
+        modelID: String,
+        wireAPI: ProviderWireAPI,
+        supportsImages: Bool = false
+    ) {
         self.modelID = modelID
         self.wireAPI = wireAPI
+        self.supportsImages = supportsImages
     }
 }
 
@@ -141,7 +149,11 @@ public enum ProviderCatalog {
     public static let openRouterProviderID = "all_in_one_openrouter"
 
     public static let openCodeGoModels: [ProviderModelDescriptor] = [
-        ProviderModelDescriptor(modelID: "gpt-5.6-luna", wireAPI: .responses),
+        ProviderModelDescriptor(
+            modelID: "gpt-5.6-luna",
+            wireAPI: .responses,
+            supportsImages: true
+        ),
 
         ProviderModelDescriptor(modelID: "grok-4.5", wireAPI: .chatCompletions),
         ProviderModelDescriptor(modelID: "glm-5.2", wireAPI: .chatCompletions),

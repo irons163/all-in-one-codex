@@ -176,6 +176,8 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(flash.displayName, "deepseek-v4-flash")
         XCTAssertEqual(flash.description, "deepseek-v4-flash")
         XCTAssertEqual(flash.shellType, "shell_command")
+        XCTAssertEqual(flash.inputModalities, ["text"])
+        XCTAssertFalse(flash.supportsImageDetailOriginal)
         XCTAssertTrue(flash.supportsReasoningSummaries)
         XCTAssertFalse(flash.baseInstructions.isEmpty)
 
@@ -194,6 +196,18 @@ final class CodexCoreTests: XCTestCase {
 
         XCTAssertEqual(catalog.models.map(\.slug), ["vendor/custom-model"])
         XCTAssertEqual(catalog.models.first?.displayName, "vendor/custom-model")
+        XCTAssertEqual(catalog.models.first?.inputModalities, ["text"])
+        XCTAssertFalse(catalog.models.first?.supportsImageDetailOriginal ?? true)
+    }
+
+    func testCodexModelCatalogAdvertisesImageInputForOpenCodeGoLuna() throws {
+        let profile = makeProfile(presetID: .openCodeGo, model: "gpt-5.6-luna")
+        let catalog = try CodexModelCatalog.make(for: profile)
+        let luna = try XCTUnwrap(catalog.models.first)
+
+        XCTAssertEqual(luna.slug, "gpt-5.6-luna")
+        XCTAssertEqual(luna.inputModalities, ["text", "image"])
+        XCTAssertTrue(luna.supportsImageDetailOriginal)
     }
 
     func testCodexModelCatalogAdvertisesAllSupportedOpenCodeGoModelsWithSelectionFirst() throws {

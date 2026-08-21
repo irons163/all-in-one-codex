@@ -255,7 +255,7 @@ public struct CodexModelCatalog: Codable, Equatable, Sendable {
         let modelIDs = advertisedModelIDs(for: profile)
         return try CodexModelCatalog(
             models: modelIDs.enumerated().map { index, modelID in
-                entry(for: modelID, priority: 1_000 + index)
+                entry(for: modelID, presetID: profile.presetID, priority: 1_000 + index)
             }
         )
     }
@@ -337,8 +337,16 @@ public struct CodexModelCatalog: Codable, Equatable, Sendable {
             .map(\.modelID)
     }
 
-    private static func entry(for modelID: String, priority: Int) -> CodexModelCatalogEntry {
-        CodexModelCatalogEntry(
+    private static func entry(
+        for modelID: String,
+        presetID: ProviderPresetID,
+        priority: Int
+    ) -> CodexModelCatalogEntry {
+        let supportsImages = ProviderCatalog.descriptor(
+            for: modelID,
+            presetID: presetID
+        )?.supportsImages == true
+        return CodexModelCatalogEntry(
             slug: modelID,
             displayName: modelID,
             description: modelID,
@@ -366,12 +374,12 @@ public struct CodexModelCatalog: Codable, Equatable, Sendable {
                 limit: 10_000
             ),
             supportsParallelToolCalls: false,
-            supportsImageDetailOriginal: false,
+            supportsImageDetailOriginal: supportsImages,
             contextWindow: defaultContextWindow,
             maxContextWindow: defaultContextWindow,
             effectiveContextWindowPercent: 95,
             experimentalSupportedTools: [],
-            inputModalities: ["text"],
+            inputModalities: supportsImages ? ["text", "image"] : ["text"],
             supportsSearchTool: false
         )
     }
