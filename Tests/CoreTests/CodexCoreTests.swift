@@ -1173,6 +1173,48 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(messages.last?["role"] as? String, "user")
     }
 
+    func testDropsForeignChatGPTCompactionInsteadOfReplayingEncryptedBlob() throws {
+        let request: [String: Any] = [
+            "model": "glm-5.2",
+            "input": [
+                [
+                    "id": "cmp_resp_foreign",
+                    "type": "compaction",
+                    "encrypted_content": "ocx1:chatgpt-bound-blob"
+                ],
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Continue."]]
+                ]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: request)
+
+        let conversion = try OpenCodeGoResponsesRequestConverter.convert(responseRequest: data)
+        let chat = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: conversion.body) as? [String: Any]
+        )
+        let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
+
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?["role"] as? String, "user")
+        XCTAssertFalse(String(decoding: conversion.body, as: UTF8.self).contains("ocx1:"))
+        XCTAssertFalse(String(decoding: conversion.body, as: UTF8.self).contains("encrypted_content"))
+    }
+
+    func testResponsesSanitizerKeepsOwnedCompactionEnvelope() throws {
+        let request: [String: Any] = [
+            "model": "gpt-5.6-luna",
+            "input": [[
+                "type": "compaction",
+                "encrypted_content": OpenCodeGoCompactionEnvelope.wrap("keep me")
+            ]]
+        ]
+        let body = try JSONSerialization.data(withJSONObject: request)
+        XCTAssertNil(OpenCodeGoResponsesRequestSanitizer.sanitizedBodyIfNeeded(from: body))
+    }
+
     func testConvertsAssistantInputFunctionCalls() throws {
         let request: [String: Any] = [
             "model": "glm-5.2",
@@ -2909,6 +2951,75 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertEqual(upstreamRequest.value(forHTTPHeaderField: "Content-Type"), "application/json")
         XCTAssertEqual(upstreamRequest.value(forHTTPHeaderField: "Content-Encoding"), "zstd")
         XCTAssertEqual(upstreamRequest.value(forHTTPHeaderField: "Accept"), "application/json")
+    }
+
+    func testPreserveResponsesLoopbackStripsForeignEncryptedContent() async throws {
+        let upstreamBody = Data(#"{"id":"resp_passthrough","model":"gpt-5.6-luna","output":[]}"#.utf8)
+        let transport = CapturingBridgeTransport(
+            response: OpenCodeGoBridgeTransportResponse(
+                statusCode: 200,
+                headers: ["content-type": "application/json"],
+                body: upstreamBody
+            )
+        )
+        let bridge = OpenCodeGoBridgeManager(port: 0, transport: transport)
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "gpt-5.6-luna",
+            preserveSessions: true
+        )
+        let route = try ProviderCatalog.route(for: profile)
+        bridge.configurePreservingSessions(
+            route: route,
+            credential: Data("selected-responses-key".utf8)
+        )
+        try bridge.ensureRunning()
+        defer { bridge.stop() }
+
+        let requestObject: [String: Any] = [
+            "model": "gpt-5.6-luna",
+            "input": [
+                [
+                    "id": "cmp_resp_chatgpt",
+                    "type": "compaction",
+                    "encrypted_content": "ocx1:chatgpt-bound-blob"
+                ],
+                [
+                    "type": "reasoning",
+                    "encrypted_content": "gAAA-chatgpt-reasoning",
+                    "summary": [["type": "summary_text", "text": "Keep this summary."]]
+                ],
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Continue."]]
+                ]
+            ]
+        ]
+        let requestBody = try JSONSerialization.data(withJSONObject: requestObject)
+        let port = try XCTUnwrap(bridge.localPort)
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/responses"))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = requestBody
+        request.setValue("Bearer inbound-oauth", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(httpResponse.statusCode, 200)
+
+        let upstreamBodyJSON = try XCTUnwrap(transport.capturedRequest?.httpBody)
+        let upstream = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: upstreamBodyJSON) as? [String: Any]
+        )
+        let input = try XCTUnwrap(upstream["input"] as? [[String: Any]])
+        XCTAssertEqual(input.count, 2)
+        XCTAssertEqual(input.first?["type"] as? String, "reasoning")
+        XCTAssertNil(input.first?["encrypted_content"])
+        XCTAssertEqual(input.last?["type"] as? String, "message")
+        XCTAssertFalse(String(decoding: upstreamBodyJSON, as: UTF8.self).contains("ocx1:"))
+        XCTAssertFalse(String(decoding: upstreamBodyJSON, as: UTF8.self).contains("encrypted_content"))
     }
 
     func testPreserveChatLoopbackRejectsCompressedBodyBeforeConversion() async throws {

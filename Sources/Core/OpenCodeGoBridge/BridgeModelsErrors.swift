@@ -722,6 +722,96 @@ enum OpenCodeGoCompactionEnvelope {
         guard encryptedContent.hasPrefix(prefix) else { return nil }
         return String(encryptedContent.dropFirst(prefix.count))
     }
+
+    static func isOwned(_ encryptedContent: String) -> Bool {
+        unwrap(encryptedContent) != nil
+    }
+}
+
+/// Codex automatically attaches provider-bound `encrypted_content` on
+/// reasoning and compaction items. Those blobs cannot be decrypted by
+/// OpenCode Go or OpenRouter, so preserve-session passthrough must strip
+/// foreign values before forwarding.
+enum OpenCodeGoResponsesRequestSanitizer {
+    static func sanitizedBodyIfNeeded(from body: Data) -> Data? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: body),
+            var root = object as? [String: Any]
+        else {
+            return nil
+        }
+
+        var didChange = false
+        if let input = root["input"] {
+            root["input"] = sanitize(input, didChange: &didChange)
+        }
+        guard didChange else {
+            return nil
+        }
+        return try? JSONSerialization.data(withJSONObject: root)
+    }
+
+    private static func sanitize(_ value: Any, didChange: inout Bool) -> Any {
+        if let items = value as? [Any] {
+            return items.compactMap { item -> Any? in
+                guard let object = item as? [String: Any] else {
+                    return item
+                }
+                return sanitizeItem(object, didChange: &didChange)
+            }
+        }
+        if let object = value as? [String: Any] {
+            return sanitizeItem(object, didChange: &didChange) ?? object
+        }
+        return value
+    }
+
+    private static func sanitizeItem(
+        _ item: [String: Any],
+        didChange: inout Bool
+    ) -> [String: Any]? {
+        var item = item
+        if let encrypted = item["encrypted_content"] as? String,
+           !OpenCodeGoCompactionEnvelope.isOwned(encrypted)
+        {
+            item.removeValue(forKey: "encrypted_content")
+            didChange = true
+            let type = item["type"] as? String
+            if type == "compaction" || type == "reasoning", !hasRecoverableText(item) {
+                return nil
+            }
+        }
+
+        if let content = item["content"] {
+            let sanitizedContent = sanitize(content, didChange: &didChange)
+            if let contentItems = sanitizedContent as? [Any] {
+                item["content"] = contentItems
+            } else {
+                item["content"] = sanitizedContent
+            }
+        }
+        return item
+    }
+
+    private static func hasRecoverableText(_ item: [String: Any]) -> Bool {
+        if let text = item["text"] as? String,
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return true
+        }
+        if let summary = item["summary"] as? [Any], !summary.isEmpty {
+            return true
+        }
+        if let content = item["content"] as? String,
+           !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return true
+        }
+        if let content = item["content"] as? [Any], !content.isEmpty {
+            return true
+        }
+        return false
+    }
 }
 
 /// The buffered JSON body that the bridge sends to Chat Completions.

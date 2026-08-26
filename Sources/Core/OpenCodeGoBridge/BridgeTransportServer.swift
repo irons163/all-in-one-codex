@@ -634,9 +634,22 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
 
         var upstreamRequest = URLRequest(url: upstreamURL)
         upstreamRequest.httpMethod = "POST"
-        upstreamRequest.httpBody = request.body
+        let forwardedBody: Data
+        if Self.isIdentityContentEncoding(request.headers),
+           let sanitized = OpenCodeGoResponsesRequestSanitizer.sanitizedBodyIfNeeded(
+            from: request.body
+           )
+        {
+            forwardedBody = sanitized
+        } else {
+            forwardedBody = request.body
+        }
+        upstreamRequest.httpBody = forwardedBody
         upstreamRequest.timeoutInterval = URLSessionOpenCodeGoBridgeTransport.upstreamRequestTimeout
         for (name, value) in request.headers where Self.forwardedRequestHeaders.contains(name) {
+            if name == "content-encoding", forwardedBody != request.body {
+                continue
+            }
             upstreamRequest.setValue(value, forHTTPHeaderField: name)
         }
         if upstreamRequest.value(forHTTPHeaderField: "Content-Type") == nil {
@@ -679,11 +692,8 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
             return "header:\(headerName):\(value)"
         }
 
-        let contentEncoding = request.headers["content-encoding"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? "identity"
         guard
-            contentEncoding.isEmpty || contentEncoding == "identity",
+            Self.isIdentityContentEncoding(request.headers),
             let object = try? JSONSerialization.jsonObject(with: request.body),
             let root = object as? [String: Any],
             let previousResponseID = root["previous_response_id"] as? String,
@@ -692,6 +702,13 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
             return nil
         }
         return "previous_response:\(value)"
+    }
+
+    private static func isIdentityContentEncoding(_ headers: [String: String]) -> Bool {
+        let encoding = headers["content-encoding"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? "identity"
+        return encoding.isEmpty || encoding == "identity"
     }
 
     private static func normalizedSessionIdentifier(_ value: String) -> String? {

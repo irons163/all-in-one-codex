@@ -303,22 +303,27 @@ public enum OpenCodeGoResponsesRequestConverter {
             return
         }
 
-        if type == "compaction",
-           let encryptedContent = stringValue(inputItem["encrypted_content"]),
-           let summary = OpenCodeGoCompactionEnvelope.unwrap(encryptedContent),
-           !summary.isEmpty
-        {
-            flushPendingToolCalls(
-                &pendingToolCalls,
-                pendingReasoningContent: &pendingReasoningContent,
-                conversationMessages: &conversationMessages,
-                lastAssistantConversationMessageIndex: &lastAssistantConversationMessageIndex,
-                requiresThinkingAssistantFields: requiresThinkingAssistantFields
-            )
-            conversationMessages.append([
-                "role": "system",
-                "content": "Prior compacted conversation context:\n\(summary)"
-            ])
+        if type == "compaction" {
+            let encryptedContent = stringValue(inputItem["encrypted_content"])
+            if let encryptedContent,
+               let summary = OpenCodeGoCompactionEnvelope.unwrap(encryptedContent),
+               !summary.isEmpty
+            {
+                flushPendingToolCalls(
+                    &pendingToolCalls,
+                    pendingReasoningContent: &pendingReasoningContent,
+                    conversationMessages: &conversationMessages,
+                    lastAssistantConversationMessageIndex: &lastAssistantConversationMessageIndex,
+                    requiresThinkingAssistantFields: requiresThinkingAssistantFields
+                )
+                conversationMessages.append([
+                    "role": "system",
+                    "content": "Prior compacted conversation context:\n\(summary)"
+                ])
+            }
+            // Foreign ChatGPT compaction blobs are bound to another provider
+            // and cannot be replayed. Drop them rather than forwarding the
+            // encrypted payload or treating the item as a user message.
             return
         }
 
