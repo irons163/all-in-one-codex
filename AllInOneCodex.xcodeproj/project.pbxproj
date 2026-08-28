@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		01273BC335A40571EA139759 /* BridgeModelsErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70F1728852AE67B012ED7601 /* BridgeModelsErrors.swift */; };
+		0484856838850F64BB7B2FFC /* AppCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1A1662FACAD27B94E5E4384 /* AppCoverageTests.swift */; };
 		22481AFA3F9A4EE017632465 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 606025FD54DA5C0EFE1BBE17 /* Localization.swift */; };
 		2ADB9E6C758A5A1163C6E262 /* AllInOneCodexApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97107184FD9E414BC12D8BFA /* AllInOneCodexApp.swift */; };
 		31F54E3EA021C604A9A4DCA1 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6268B355D1DBF12EAD9C970A /* ContentView.swift */; };
@@ -27,6 +28,7 @@
 		9161B81C13C08B9DBEAC404D /* CodexBackupStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F126FE0D6F113AF8AB3001 /* CodexBackupStore.swift */; };
 		973B9A463034F858659DF8E4 /* SwitchReceiptRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD7B89544E9D012E682527A2 /* SwitchReceiptRepository.swift */; };
 		BAF0DB9E83CDFAB36DAEE7E7 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6453E9995E39F2C120A913C /* AppState.swift */; };
+		BBADFF8C322E191E0E9A4266 /* CoverageGapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0CC3EC57BBB207DFEE56E67 /* CoverageGapTests.swift */; };
 		C4812B742DC4E13D2408ACA0 /* CodexClientAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55B9926684FDBC96D2447846 /* CodexClientAdapter.swift */; };
 		CFFE651F5C8C90C539C4BFE4 /* StreamingChatToResponses.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0E6AAF768DB02D48C4B96DC /* StreamingChatToResponses.swift */; };
 		E5B5F3541FD445AC1A18DE5C /* ThinkingProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 845B77E4B2B243D7CB6019EA /* ThinkingProfile.swift */; };
@@ -61,6 +63,8 @@
 		97107184FD9E414BC12D8BFA /* AllInOneCodexApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllInOneCodexApp.swift; sourceTree = "<group>"; };
 		9CF7E3793A0150410FD30659 /* ChatResponseConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatResponseConverter.swift; sourceTree = "<group>"; };
 		9FA1B63779DDD082993C4901 /* ProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileRepository.swift; sourceTree = "<group>"; };
+		A0CC3EC57BBB207DFEE56E67 /* CoverageGapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverageGapTests.swift; sourceTree = "<group>"; };
+		A1A1662FACAD27B94E5E4384 /* AppCoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoverageTests.swift; sourceTree = "<group>"; };
 		A22292CEF921A003FD0BA782 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		A26C5260A95E92BB71040EB7 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
 		AD7B89544E9D012E682527A2 /* SwitchReceiptRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitchReceiptRepository.swift; sourceTree = "<group>"; };
@@ -167,7 +171,9 @@
 		F005AB0F5AFA6DF0F2B576E6 /* CoreTests */ = {
 			isa = PBXGroup;
 			children = (
+				A1A1662FACAD27B94E5E4384 /* AppCoverageTests.swift */,
 				321BFF8E53445ECDA6DC3286 /* CodexCoreTests.swift */,
+				A0CC3EC57BBB207DFEE56E67 /* CoverageGapTests.swift */,
 			);
 			path = CoreTests;
 			sourceTree = "<group>";
@@ -292,7 +298,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0484856838850F64BB7B2FFC /* AppCoverageTests.swift in Sources */,
 				3F4D4BE57E42DC54849AC73C /* CodexCoreTests.swift in Sources */,
+				BBADFF8C322E191E0E9A4266 /* CoverageGapTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -327,7 +327,7 @@ struct ProfileEditorView: View {
     }
 }
 
-private struct PreviewSection: View {
+struct PreviewSection: View {
     let preview: AppState.PreviewSnapshot
 
     var body: some View {

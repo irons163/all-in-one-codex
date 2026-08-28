@@ -193,7 +193,7 @@ struct SettingsView: View {
     }
 }
 
-private struct RestoreBackupView: View {
+struct RestoreBackupView: View {
     @EnvironmentObject private var appState: AppState
     @State private var pendingBackup: CodexConfigurationBackup?
 
@@ -321,7 +321,7 @@ private struct RestoreBackupView: View {
     }
 }
 
-private struct RestoreBackupRow: View {
+struct RestoreBackupRow: View {
     let backup: CodexConfigurationBackup
 
     var body: some View {
@@ -356,7 +356,7 @@ private struct RestoreBackupRow: View {
     }
 }
 
-private struct UndoJournalRow: View {
+struct UndoJournalRow: View {
     let entry: SwitchReceiptJournalEntry
 
     var body: some View {
@@ -392,7 +392,7 @@ private struct UndoJournalRow: View {
     }
 }
 
-private struct ProfileRow: View {
+struct ProfileRow: View {
     let item: AppState.ProfileListItem
 
     var body: some View {
@@ -567,7 +567,7 @@ private extension OpenCodeGoBridgeStatus {
     }
 }
 
-private struct EmptyStateView: View {
+struct EmptyStateView: View {
     let createProfile: () -> Void
 
     var body: some View {

@@ -1342,12 +1342,21 @@ final class CodexCoreTests: XCTestCase {
         )
         let messages = try XCTUnwrap(chat["messages"] as? [[String: Any]])
 
-        XCTAssertEqual(messages.count, 2)
-        for message in messages {
-            XCTAssertEqual(message["role"] as? String, "assistant")
-            XCTAssertEqual(message["content"] as? String, "")
-            XCTAssertEqual(message["reasoning_content"] as? String, "tool call")
-        }
+        XCTAssertEqual(messages.count, 1)
+        let message = messages[0]
+        XCTAssertEqual(message["role"] as? String, "assistant")
+        XCTAssertEqual(message["content"] as? String, "")
+        XCTAssertEqual(message["reasoning_content"] as? String, "tool call")
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.count, 2)
+        XCTAssertEqual(
+            (toolCalls[0]["function"] as? [String: Any])?["name"] as? String,
+            "lookup_weather"
+        )
+        XCTAssertEqual(
+            (toolCalls[1]["function"] as? [String: Any])?["name"] as? String,
+            "lookup_custom"
+        )
     }
 
     func testDeepSeekStandaloneReasoningSummaryAttachesToFollowingToolCall() throws {
@@ -2136,7 +2145,7 @@ final class CodexCoreTests: XCTestCase {
 
     func testPreservesExplicitEmptyAssistantReasoningContentWithoutSynthesizingIt() throws {
         let explicitRequest: [String: Any] = [
-            "model": "glm-5.2",
+            "model": "grok-4.5",
             "input": [[
                 "role": "assistant",
                 "content": "I will continue.",
@@ -2154,7 +2163,7 @@ final class CodexCoreTests: XCTestCase {
         )
 
         let ordinaryRequest: [String: Any] = [
-            "model": "glm-5.2",
+            "model": "grok-4.5",
             "input": [["role": "assistant", "content": "I will continue."]]
         ]
         let ordinaryConversion = try OpenCodeGoResponsesRequestConverter.convert(
