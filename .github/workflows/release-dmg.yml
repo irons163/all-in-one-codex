@@ -15,11 +15,17 @@ on:
           - dev
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-dmg:
+    # Manual runs may use signing secrets only from the default branch.
+    # Release events are already created from a tagged commit.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
     runs-on: macos-15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +37,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Select latest Xcode
         shell: bash
@@ -51,6 +59,22 @@ jobs:
           echo "Selected Xcode version: $XCODE_VERSION"
           if [[ "${XCODE_MAJOR:-0}" -lt 16 ]]; then
             echo "Xcode 16+ is required for this project format, got: $XCODE_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Validate release tag before loading secrets
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          RELEASE_TAG_INPUT: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${RELEASE_TAG_INPUT:-}"
+          TAG_VERSION="${TAG_VERSION#refs/tags/}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          TAG_VERSION="${TAG_VERSION#V}"
+          if [[ ! "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag is not a supported semantic version; refusing to load signing secrets." >&2
             exit 1
           fi
 
@@ -131,17 +155,25 @@ jobs:
         shell: bash
         env:
           RELEASE_PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || 'false' }}
+          RELEASE_TAG_INPUT: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
         run: |
           set -euo pipefail
 
           TAG_VERSION=""
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
-            TAG_VERSION="${{ github.event.release.tag_name }}"
+            # Read the untrusted event value through the environment. Do not
+            # interpolate it into shell source.
+            TAG_VERSION="${RELEASE_TAG_INPUT:-}"
           fi
 
           TAG_VERSION="${TAG_VERSION#refs/tags/}"
           TAG_VERSION="${TAG_VERSION#v}"
           TAG_VERSION="${TAG_VERSION#V}"
+
+          if [[ -n "$TAG_VERSION" && ! "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag is not a supported semantic version: $TAG_VERSION" >&2
+            exit 1
+          fi
 
           MARKETING_VERSION="$(xcodebuild \
             -project AllInOneCodex.xcodeproj \
@@ -216,29 +248,49 @@ jobs:
           scripts/build_and_notarize_dmg.sh
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-${{ matrix.arch.label }}
           path: |
             dist/*.dmg
             dist/*.dSYM.zip
 
+
+  attach-release:
+    if: github.event_name == 'release'
+    needs: build-dmg
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
       - name: Attach build artifacts to GitHub Release
-        if: github.event_name == 'release'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
         run: |
           set -euo pipefail
           gh release upload "$RELEASE_TAG" dist/*.dmg dist/*.dSYM.zip --clobber
 
+      - name: Checkout release notes
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
       - name: Attach localized release notes when present
-        if: github.event_name == 'release' && matrix.arch.id == 'arm64'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
         run: |
           set -euo pipefail
 

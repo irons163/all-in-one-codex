@@ -288,13 +288,17 @@ enum CodexBackupStore {
         }
 
         do {
-            let contents = try Data(contentsOf: standardizedBackup)
+            let handle = try FileHandle(forReadingFrom: standardizedBackup)
+            defer { try? handle.close() }
+            let contents = try handle.read(upToCount: maximumBytes + 1) ?? Data()
             guard contents.count <= maximumBytes else {
                 throw CodexSwitchError.configurationBackupTooLarge
             }
             return contents
         } catch let error as CodexSwitchError {
             throw error
+        } catch let error as CocoaError where error.code == .fileReadTooLarge {
+            throw CodexSwitchError.configurationBackupTooLarge
         } catch {
             throw CodexSwitchError.backupUnavailable
         }

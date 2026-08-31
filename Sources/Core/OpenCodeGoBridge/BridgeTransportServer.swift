@@ -49,7 +49,7 @@ public final class URLSessionOpenCodeGoBridgeTransport: OpenCodeGoBridgeTranspor
 
 /// Thread-safe owner of the fixed local listener used by Chat-only models and
 /// opt-in session-preserving routes.
-public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGoBridgeConfiguring, @unchecked Sendable {
+public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGoBridgeCapabilityConfiguring, @unchecked Sendable {
     public static let port: UInt16 = 14_556
     public static let baseURL = ProviderCatalog.openCodeGoBridgeBaseURL
     public static let shared = OpenCodeGoBridgeManager()
@@ -133,6 +133,23 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGo
         lock.unlock()
     }
 
+    /// Configures the chat conversion lane with an in-memory provider
+    /// credential and a URL capability. The credential never reaches the
+    /// generated Codex config or the inbound request path.
+    func configureLegacyChatMode(
+        credential: Data,
+        capabilityToken: String
+    ) {
+        lock.lock()
+        routingMode = .authenticatedLegacyChat(
+            OpenCodeGoBridgeLegacyChat(
+                credential: credential,
+                capabilityToken: capabilityToken
+            )
+        )
+        lock.unlock()
+    }
+
     /// Atomically replaces the active preservation route and in-memory
     /// Keychain credential. The value is never written to configuration,
     /// logged, or reflected into bridge errors.
@@ -142,7 +159,30 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGo
     ) {
         lock.lock()
         routingMode = .preservingSessions(
-            OpenCodeGoBridgePreservation(route: route, credential: credential)
+            OpenCodeGoBridgePreservation(
+                route: route,
+                credential: credential,
+                capabilityToken: nil
+            )
+        )
+        lock.unlock()
+    }
+
+    /// Configures the session-preserving lane with a per-apply URL
+    /// capability. Codex's inbound OAuth bearer remains caller-owned and is
+    /// never forwarded upstream; only this selected Keychain credential is.
+    func configurePreservingSessions(
+        route: ProviderRoute,
+        credential: Data,
+        capabilityToken: String
+    ) {
+        lock.lock()
+        routingMode = .preservingSessions(
+            OpenCodeGoBridgePreservation(
+                route: route,
+                credential: credential,
+                capabilityToken: capabilityToken
+            )
         )
         lock.unlock()
     }
@@ -160,12 +200,30 @@ public final class OpenCodeGoBridgeManager: OpenCodeGoBridgeManaging, OpenCodeGo
 
 private enum OpenCodeGoBridgeRoutingMode: Sendable {
     case legacyChat
+    case authenticatedLegacyChat(OpenCodeGoBridgeLegacyChat)
     case preservingSessions(OpenCodeGoBridgePreservation)
+
+    var capabilityToken: String? {
+        switch self {
+        case .legacyChat:
+            return nil
+        case .authenticatedLegacyChat(let mode):
+            return mode.capabilityToken
+        case .preservingSessions(let mode):
+            return mode.capabilityToken
+        }
+    }
+}
+
+private struct OpenCodeGoBridgeLegacyChat: Sendable {
+    let credential: Data
+    let capabilityToken: String
 }
 
 private struct OpenCodeGoBridgePreservation: Sendable {
     let route: ProviderRoute
     let credential: Data
+    let capabilityToken: String?
 }
 
 private struct OpenCodeGoBridgeHTTPRequest: Sendable {
@@ -408,15 +466,35 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
         _ request: OpenCodeGoBridgeHTTPRequest,
         completion: @escaping @Sendable (OpenCodeGoBridgeHTTPResponse) -> Void
     ) {
-        if request.method == "GET", request.path == "/health" {
+        let routingMode = routingModeProvider()
+        let routedRequest: OpenCodeGoBridgeHTTPRequest
+        if let capabilityToken = routingMode.capabilityToken {
+            guard let strippedPath = OpenCodeGoBridgeCapability.strippedRequestPath(
+                request.path,
+                token: capabilityToken
+            ) else {
+                completion(.normalizedError(OpenCodeGoBridgeError.missingAuthorization))
+                return
+            }
+            routedRequest = OpenCodeGoBridgeHTTPRequest(
+                method: request.method,
+                path: strippedPath,
+                headers: request.headers,
+                body: request.body
+            )
+        } else {
+            routedRequest = request
+        }
+
+        if routedRequest.method == "GET", routedRequest.path == "/health" {
             completion(.health())
             return
         }
-        if request.method == "GET", OpenCodeGoBridgeRoute.acceptsModelList(request.path) {
+        if routedRequest.method == "GET", OpenCodeGoBridgeRoute.acceptsModelList(routedRequest.path) {
             completion(.models())
             return
         }
-        guard request.method == "POST" else {
+        guard routedRequest.method == "POST" else {
             completion(
                 OpenCodeGoBridgeHTTPResponse(
                     statusCode: 405,
@@ -426,7 +504,7 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
             )
             return
         }
-        guard OpenCodeGoBridgeRoute.accepts(request.path) else {
+        guard OpenCodeGoBridgeRoute.accepts(routedRequest.path) else {
             completion(
                 OpenCodeGoBridgeHTTPResponse(
                     statusCode: 404,
@@ -436,18 +514,13 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
             )
             return
         }
-        guard
-            let authorization = request.headers["authorization"],
-            authorization.lowercased().hasPrefix("bearer "),
-            authorization.dropFirst("bearer ".count)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .isEmpty == false
-        else {
+        let authorization = request.headers["authorization"].flatMap(Self.validBearer)
+        if case .legacyChat = routingMode, authorization == nil {
             completion(.normalizedError(OpenCodeGoBridgeError.missingAuthorization))
             return
         }
 
-        let sessionKey = Self.sessionKey(for: request)
+        let sessionKey = Self.sessionKey(for: routedRequest)
         let coordinator = sessionRequestCoordinator
         Task { [weak self, coordinator] in
             let admitted = await coordinator.perform(for: sessionKey) { [weak self] in
@@ -457,7 +530,8 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
                 }
                 completion(
                     await self.handleAuthorizedRequest(
-                        request,
+                        routedRequest,
+                        routingMode: routingMode,
                         authorization: authorization
                     )
                 )
@@ -470,13 +544,23 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
 
     private func handleAuthorizedRequest(
         _ request: OpenCodeGoBridgeHTTPRequest,
-        authorization: String
+        routingMode: OpenCodeGoBridgeRoutingMode,
+        authorization: String?
     ) async -> OpenCodeGoBridgeHTTPResponse {
-        switch routingModeProvider() {
+        switch routingMode {
         case .legacyChat:
             // Legacy custom-provider mode keeps the existing contract: Codex
             // supplies the Keychain-backed bearer through auth.command and
             // the bridge converts only Chat Completions models.
+            return await handleChatRequest(
+                request,
+                upstreamURL: Self.legacyChatUpstreamURL,
+                authorization: authorization ?? ""
+            )
+        case .authenticatedLegacyChat(let mode):
+            guard let authorization = Self.providerAuthorization(from: mode.credential) else {
+                return .normalizedError(OpenCodeGoBridgeError.missingProviderCredential)
+            }
             return await handleChatRequest(
                 request,
                 upstreamURL: Self.legacyChatUpstreamURL,
@@ -735,6 +819,18 @@ private final class OpenCodeGoBridgeRequestHandler: @unchecked Sendable {
         return "Bearer \(credential)"
     }
 
+    private static func validBearer(_ value: String) -> String? {
+        guard
+            value.lowercased().hasPrefix("bearer "),
+            value.dropFirst("bearer ".count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty == false
+        else {
+            return nil
+        }
+        return value
+    }
+
     private static func upstreamURL(baseURL: String, relativePath: String) -> URL? {
         guard var components = URLComponents(string: baseURL) else {
             return nil
@@ -761,6 +857,41 @@ enum OpenCodeGoBridgeSocketOptions {
             socklen_t(MemoryLayout<Int32>.size)
         ) == 0
     }
+
+    @discardableResult
+    static func configureIOTimeouts(
+        on descriptor: Int32,
+        receiveTimeout: TimeInterval = 30,
+        sendTimeout: TimeInterval = 60
+    ) -> Bool {
+        func timeval(for timeout: TimeInterval) -> Darwin.timeval {
+            let seconds = max(0, Int(timeout))
+            let microseconds = max(0, min(999_999, Int((timeout - Double(seconds)) * 1_000_000)))
+            return Darwin.timeval(tv_sec: seconds, tv_usec: Int32(microseconds))
+        }
+
+        var receive = timeval(for: receiveTimeout)
+        var send = timeval(for: sendTimeout)
+        let receiveResult = withUnsafePointer(to: &receive) { pointer in
+            Darwin.setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_RCVTIMEO,
+                pointer,
+                socklen_t(MemoryLayout<Darwin.timeval>.size)
+            )
+        }
+        let sendResult = withUnsafePointer(to: &send) { pointer in
+            Darwin.setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_SNDTIMEO,
+                pointer,
+                socklen_t(MemoryLayout<Darwin.timeval>.size)
+            )
+        }
+        return receiveResult == 0 && sendResult == 0
+    }
 }
 
 /// Minimal HTTP/1.1 server restricted to the IPv4 loopback address. Each
@@ -769,6 +900,9 @@ enum OpenCodeGoBridgeSocketOptions {
 private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
     private static let maximumHeaderBytes = 64 * 1024
     private static let maximumBodyBytes = 8 * 1024 * 1024
+    static let maximumConcurrentConnections = 32
+    static let receiveTimeout: TimeInterval = 30
+    static let sendTimeout: TimeInterval = 60
 
     private let port: UInt16
     private let handler: OpenCodeGoBridgeRequestHandler
@@ -777,6 +911,9 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
     private let connectionQueue = DispatchQueue(
         label: "com.allinonecodex.bridge.connection",
         attributes: .concurrent
+    )
+    private let connectionSlots = DispatchSemaphore(
+        value: OpenCodeGoLoopbackHTTPServer.maximumConcurrentConnections
     )
     private var listeningDescriptor: Int32 = -1
     private var boundPort: UInt16?
@@ -832,7 +969,10 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
             throw OpenCodeGoBridgeError.unableToStart
         }
 
-        guard Darwin.listen(descriptor, SOMAXCONN) == 0 else {
+        guard Darwin.listen(
+            descriptor,
+            Int32(OpenCodeGoLoopbackHTTPServer.maximumConcurrentConnections)
+        ) == 0 else {
             _ = Darwin.close(descriptor)
             throw OpenCodeGoBridgeError.unableToStart
         }
@@ -914,6 +1054,23 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
                 continue
             }
 
+            guard OpenCodeGoBridgeSocketOptions.configureIOTimeouts(
+                on: clientDescriptor,
+                receiveTimeout: Self.receiveTimeout,
+                sendTimeout: Self.sendTimeout
+            ) else {
+                _ = Darwin.close(clientDescriptor)
+                continue
+            }
+
+            // Admit only a bounded number of active sockets. Rejecting before
+            // enqueueing keeps the concurrent GCD queue from becoming an
+            // unbounded memory sink under a local connection flood.
+            guard connectionSlots.wait(timeout: .now()) == .success else {
+                _ = Darwin.close(clientDescriptor)
+                continue
+            }
+
             connectionQueue.async { [weak self] in
                 self?.serveConnection(clientDescriptor)
             }
@@ -923,15 +1080,21 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
     private func serveConnection(_ descriptor: Int32) {
         switch Self.readRequest(from: descriptor) {
         case .success(let request):
-            handler.handle(request) { response in
+            // Keep the admission slot until the response has been written and
+            // the socket is closed. `handler.handle` may return immediately
+            // while its upstream task is still running; releasing here would
+            // let a flood of slow upstream requests bypass the connection cap.
+            handler.handle(request) { [weak self] response in
                 Task {
                     await Self.writeAsync(response, to: descriptor)
                     _ = Darwin.close(descriptor)
+                    self?.connectionSlots.signal()
                 }
             }
         case .failure(let error):
             Self.write(.normalizedError(error), to: descriptor)
             _ = Darwin.close(descriptor)
+            connectionSlots.signal()
         }
     }
 
@@ -1192,6 +1355,7 @@ private final class OpenCodeGoLoopbackHTTPServer: @unchecked Sendable {
 enum OpenCodeGoBridgeDiagnostics {
     private static let lock = NSLock()
     private static let maxEntries = 40
+    private static let maximumLogBytes = 256 * 1024
     private static let maxUpstreamMessageChars = 400
 
     static func recordUpstreamRejection(
@@ -1223,25 +1387,112 @@ enum OpenCodeGoBridgeDiagnostics {
             return
         }
         do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            if FileManager.default.fileExists(atPath: url.path),
-               let existing = try? String(contentsOf: url, encoding: .utf8)
+            let directoryURL = url.deletingLastPathComponent()
+            if let values = try? directoryURL.resourceValues(forKeys: [.isSymbolicLinkKey]),
+               values.isSymbolicLink == true
             {
-                var lines = existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-                lines.append(String(text.dropLast()))
-                if lines.count > maxEntries {
-                    lines = Array(lines.suffix(maxEntries))
-                }
-                try lines.joined(separator: "\n").appending("\n").write(to: url, atomically: true, encoding: .utf8)
-            } else {
-                try text.write(to: url, atomically: true, encoding: .utf8)
+                return
             }
+            try FileManager.default.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            guard directoryURL.path.withCString({
+                Darwin.chmod($0, mode_t(0o700))
+            }) == 0 else { return }
+
+            if FileManager.default.fileExists(atPath: url.path) {
+                guard
+                    let values = try? url.resourceValues(
+                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                    ),
+                    values.isRegularFile == true,
+                    values.isSymbolicLink != true
+                else {
+                    return
+                }
+            }
+
+            let existing: String
+            if let loaded = try? readPrivateLog(from: url),
+               loaded.count <= maximumLogBytes,
+               let text = String(data: loaded, encoding: .utf8)
+            {
+                existing = text
+            } else {
+                existing = ""
+            }
+
+            var lines = existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            lines.append(String(text.dropLast()))
+            if lines.count > maxEntries {
+                lines = Array(lines.suffix(maxEntries))
+            }
+            var output = lines.joined(separator: "\n").appending("\n")
+            while output.utf8.count > maximumLogBytes, lines.count > 1 {
+                lines.removeFirst()
+                output = lines.joined(separator: "\n").appending("\n")
+            }
+            guard output.utf8.count <= maximumLogBytes else {
+                return
+            }
+            try writePrivateLog(Data(output.utf8), to: url)
         } catch {
             return
         }
+    }
+
+    private static func writePrivateLog(_ data: Data, to url: URL) throws {
+        let descriptor = url.path.withCString {
+            Darwin.open(
+                $0,
+                O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK,
+                mode_t(0o600)
+            )
+        }
+        guard descriptor >= 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { _ = Darwin.close(descriptor) }
+        guard Darwin.fchmod(descriptor, mode_t(0o600)) == 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        var remaining = data
+        while !remaining.isEmpty {
+            let written = remaining.withUnsafeBytes { rawBuffer in
+                Darwin.write(descriptor, rawBuffer.baseAddress, rawBuffer.count)
+            }
+            if written > 0 {
+                remaining.removeFirst(Int(written))
+                continue
+            }
+            if written == -1, errno == EINTR {
+                continue
+            }
+            throw CocoaError(.fileWriteUnknown)
+        }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+
+    private static func readPrivateLog(from url: URL) throws -> Data {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return Data()
+        }
+        guard
+            let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+            ),
+            values.isRegularFile == true,
+            values.isSymbolicLink != true
+        else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        return try handle.read(upToCount: maximumLogBytes + 1) ?? Data()
     }
 
     private static func logURL() -> URL? {
@@ -1294,10 +1545,23 @@ enum OpenCodeGoBridgeDiagnostics {
             "assistant_tool_batches": assistantToolCallBatches,
             "assistant_tool_calls": assistantToolCallTotal,
             "has_tools": root["tools"] != nil,
-            "tool_choice": String(describing: root["tool_choice"] ?? NSNull()),
+            "tool_choice": toolChoiceSummary(root["tool_choice"]),
             "has_thinking": root["thinking"] != nil,
             "has_response_format": root["response_format"] != nil,
             "stream": root["stream"] as? Bool ?? false
         ]
+    }
+
+    private static func toolChoiceSummary(_ value: Any?) -> String {
+        switch value {
+        case let value as String where ["auto", "none", "required"].contains(value):
+            return value
+        case is [String: Any]:
+            return "object"
+        case nil:
+            return "absent"
+        default:
+            return "other"
+        }
     }
 }

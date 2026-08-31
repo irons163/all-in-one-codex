@@ -117,6 +117,8 @@ public extension ClientAdapter {
 
 /// Codex-specific implementation that projects and atomically switches `~/.codex/config.toml`.
 public struct CodexClientAdapter: ClientAdapter {
+    public static let maximumConfigurationBytes = 4 * 1024 * 1024
+
     public static var defaultConfigURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex", isDirectory: true)
@@ -316,10 +318,18 @@ public struct CodexClientAdapter: ClientAdapter {
             in: configurationText
         ) {
             let credential = try credential(for: preservedConfiguration.profileID)
-            try configureBridgeForPreservingSessions(
-                route: preservedConfiguration.route,
-                credential: credential
-            )
+            if let capabilityToken = preservedConfiguration.capabilityToken {
+                try configureBridgeForPreservingSessions(
+                    route: preservedConfiguration.route,
+                    credential: credential,
+                    capabilityToken: capabilityToken
+                )
+            } else {
+                try configureBridgeForPreservingSessions(
+                    route: preservedConfiguration.route,
+                    credential: credential
+                )
+            }
             try bridgeManager.ensureRunning()
             return
         }
@@ -327,7 +337,17 @@ public struct CodexClientAdapter: ClientAdapter {
         guard Self.activeModelProvider(in: configurationText) == ProviderCatalog.openCodeGoBridgeProviderID else {
             return
         }
-        configureLegacyBridgeMode()
+        if let bridgeConfiguration = Self.bridgeCapabilityConfiguration(in: configurationText) {
+            let credential = try credential(for: bridgeConfiguration.profileID)
+            configureLegacyBridgeMode(
+                credential: credential,
+                capabilityToken: bridgeConfiguration.capabilityToken
+            )
+        } else {
+            // Existing installations generated before capability URLs remain
+            // compatible; the next Apply writes the authenticated projection.
+            configureLegacyBridgeMode()
+        }
         try bridgeManager.ensureRunning()
     }
 
@@ -353,11 +373,17 @@ public struct CodexClientAdapter: ClientAdapter {
     public func apply(profile: ProviderProfile) throws -> SwitchReceipt {
         let credential = try credential(for: profile.id)
         let route = try ProviderCatalog.route(for: profile)
+        let supportsCapabilityAuth = bridgeManager is any OpenCodeGoBridgeCapabilityConfiguring
+        let capabilityToken: String? = supportsCapabilityAuth &&
+            (profile.preserveSessions || route.requiresLoopbackBridge)
+            ? OpenCodeGoBridgeCapability.generate()
+            : nil
         let configurationSnapshot = try readConfiguration()
         let catalog = try CodexModelCatalog.make(for: profile)
         let projected = try projector.project(
             original: configurationSnapshot.text,
-            profile: profile
+            profile: profile,
+            bridgeCapabilityToken: capabilityToken
         )
         let ownedCatalogURL = try ownedCatalogURL()
         let catalogSnapshot = try readCatalogSnapshot(
@@ -382,13 +408,31 @@ public struct CodexClientAdapter: ClientAdapter {
             // The listener must be configured and available before Codex is
             // pointed at its fixed OpenAI base URL. The Keychain value stays
             // in bridge memory only; it is never rendered into TOML.
-            try configureBridgeForPreservingSessions(route: route, credential: credential)
+            if let capabilityToken {
+                try configureBridgeForPreservingSessions(
+                    route: route,
+                    credential: credential,
+                    capabilityToken: capabilityToken
+                )
+            } else {
+                try configureBridgeForPreservingSessions(
+                    route: route,
+                    credential: credential
+                )
+            }
             try bridgeManager.ensureRunning()
         } else {
             // Clear any earlier session-preservation credential before a
             // normal custom-provider switch. No listener is started for
             // direct Responses routes, preserving the existing behavior.
-            configureLegacyBridgeMode()
+            if let capabilityToken {
+                configureLegacyBridgeMode(
+                    credential: credential,
+                    capabilityToken: capabilityToken
+                )
+            } else {
+                configureLegacyBridgeMode()
+            }
         }
         if !profile.preserveSessions, route.requiresLoopbackBridge {
             // The listener must be available before Codex is pointed at it.
@@ -500,6 +544,17 @@ public struct CodexClientAdapter: ClientAdapter {
             .configureLegacyChatMode()
     }
 
+    private func configureLegacyBridgeMode(
+        credential: Data,
+        capabilityToken: String
+    ) {
+        (bridgeManager as? any OpenCodeGoBridgeConfiguring)?
+            .configureLegacyChatMode(
+                credential: credential,
+                capabilityToken: capabilityToken
+            )
+    }
+
     private func configureBridgeForPreservingSessions(
         route: ProviderRoute,
         credential: Data
@@ -512,6 +567,21 @@ public struct CodexClientAdapter: ClientAdapter {
         bridge.configurePreservingSessions(route: route, credential: credential)
     }
 
+    private func configureBridgeForPreservingSessions(
+        route: ProviderRoute,
+        credential: Data,
+        capabilityToken: String
+    ) throws {
+        guard let bridge = bridgeManager as? any OpenCodeGoBridgeConfiguring else {
+            throw OpenCodeGoBridgeError.unableToStart
+        }
+        bridge.configurePreservingSessions(
+            route: route,
+            credential: credential,
+            capabilityToken: capabilityToken
+        )
+    }
+
     private func readConfiguration() throws -> ConfigurationSnapshot {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: configURL.path) else {
@@ -520,8 +590,25 @@ public struct CodexClientAdapter: ClientAdapter {
 
         let data: Data
         do {
-            data = try Data(contentsOf: configURL)
+            guard
+                let values = try? configURL.resourceValues(
+                    forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+                ),
+                values.isRegularFile == true,
+                values.isSymbolicLink != true,
+                let size = values.fileSize,
+                size <= Int64(Self.maximumConfigurationBytes)
+            else {
+                throw CodexSwitchError.unreadableConfiguration
+            }
+            data = try readBoundedData(
+                from: configURL,
+                maximumBytes: Self.maximumConfigurationBytes
+            )
         } catch {
+            throw CodexSwitchError.unreadableConfiguration
+        }
+        guard data.count <= Self.maximumConfigurationBytes else {
             throw CodexSwitchError.unreadableConfiguration
         }
         guard let text = String(data: data, encoding: .utf8) else {
@@ -547,7 +634,31 @@ public struct CodexClientAdapter: ClientAdapter {
 
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            guard
+                let values = try? url.resourceValues(
+                    forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+                ),
+                values.isRegularFile == true,
+                values.isSymbolicLink != true,
+                let size = values.fileSize,
+                size <= Int64(CodexModelCatalog.maximumCatalogBytes)
+            else {
+                if let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+                   let size = values.fileSize,
+                   size > Int64(CodexModelCatalog.maximumCatalogBytes)
+                {
+                    throw CodexModelCatalogError.catalogTooLarge
+                }
+                throw CodexModelCatalogError.unreadableCatalog
+            }
+            data = try readBoundedData(
+                from: url,
+                maximumBytes: CodexModelCatalog.maximumCatalogBytes
+            )
+        } catch let error as CodexModelCatalogError {
+            throw error
+        } catch let error as CocoaError where error.code == .fileReadTooLarge {
+            throw CodexModelCatalogError.catalogTooLarge
         } catch {
             throw CodexModelCatalogError.unreadableCatalog
         }
@@ -558,6 +669,19 @@ public struct CodexClientAdapter: ClientAdapter {
             _ = try CodexModelCatalog.decodeValidated(from: data)
         }
         return FileSnapshot(data: data, existed: true)
+    }
+
+    private func readBoundedData(
+        from url: URL,
+        maximumBytes: Int
+    ) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+        guard data.count <= maximumBytes else {
+            throw CocoaError(.fileReadTooLarge)
+        }
+        return data
     }
 
     private func readConfigurationBackup(at url: URL) throws -> Data {
@@ -1054,8 +1178,9 @@ public struct CodexClientAdapter: ClientAdapter {
             let model = stringAssignment(named: "model", in: activeLines),
             !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             stringAssignment(named: "model_provider", in: activeLines) == nil,
-            stringAssignment(named: "openai_base_url", in: activeLines)
-                == ProviderCatalog.openCodeGoBridgeBaseURL
+            let openAIBaseURL = stringAssignment(named: "openai_base_url", in: activeLines),
+            openAIBaseURL == ProviderCatalog.openCodeGoBridgeBaseURL ||
+                OpenCodeGoBridgeCapability.token(fromBaseURL: openAIBaseURL) != nil
         else {
             return nil
         }
@@ -1072,7 +1197,64 @@ public struct CodexClientAdapter: ClientAdapter {
         guard let route = try? ProviderCatalog.route(for: profile) else {
             return nil
         }
-        return PreservedSessionBridgeConfiguration(profileID: profileID, route: route)
+        return PreservedSessionBridgeConfiguration(
+            profileID: profileID,
+            route: route,
+            capabilityToken: stringAssignment(named: "openai_base_url", in: activeLines)
+                .flatMap(OpenCodeGoBridgeCapability.token(fromBaseURL:))
+        )
+    }
+
+    private static func bridgeCapabilityConfiguration(
+        in configuration: String
+    ) -> (profileID: UUID, capabilityToken: String)? {
+        let lines = configuration
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        guard let providersRange = managedProviderRange(in: lines) else {
+            return nil
+        }
+        let providerLines = Array(lines[providersRange])
+        guard
+            let profileMarker = markerValue(
+                withPrefix: CodexConfigProjector.bridgeProfileIDMarkerPrefix,
+                in: providerLines
+            ),
+            let profileID = UUID(uuidString: profileMarker),
+            let capabilityToken = markerValue(
+                withPrefix: CodexConfigProjector.bridgeCapabilityTokenMarkerPrefix,
+                in: providerLines
+            ),
+            OpenCodeGoBridgeCapability.isValid(capabilityToken)
+        else {
+            return nil
+        }
+
+        // Bind the marker to the app-owned bridge table as well as its
+        // provider range. This prevents an arbitrary comment elsewhere in a
+        // user-edited TOML file from making launch preparation use a Keychain
+        // credential with an attacker-selected capability.
+        let bridgeHeader = "[model_providers.\(ProviderCatalog.openCodeGoBridgeProviderID)]"
+        guard let bridgeStart = providerLines.firstIndex(of: bridgeHeader) else {
+            return nil
+        }
+        let bridgeEnd: Int
+        if bridgeStart + 1 < providerLines.endIndex {
+            bridgeEnd = providerLines[(bridgeStart + 1)..<providerLines.endIndex]
+                .firstIndex(where: isTomlTableHeader)
+                ?? providerLines.endIndex
+        } else {
+            bridgeEnd = providerLines.endIndex
+        }
+        let bridgeLines = Array(providerLines[bridgeStart..<bridgeEnd])
+        guard
+            let baseURL = stringAssignment(named: "base_url", in: bridgeLines),
+            OpenCodeGoBridgeCapability.token(fromBaseURL: baseURL) == capabilityToken
+        else {
+            return nil
+        }
+        return (profileID, capabilityToken)
     }
 
     /// Codex Desktop has been observed rewriting `config.toml` and dropping the
@@ -1110,7 +1292,9 @@ public struct CodexClientAdapter: ClientAdapter {
         }
 
         let currentURL = stringAssignment(named: "openai_base_url", in: activeLines)
-        if currentURL == ProviderCatalog.openCodeGoBridgeBaseURL {
+        if currentURL == ProviderCatalog.openCodeGoBridgeBaseURL ||
+           (currentURL.flatMap(OpenCodeGoBridgeCapability.token(fromBaseURL:)) != nil)
+        {
             return nil
         }
 
@@ -1154,6 +1338,29 @@ public struct CodexClientAdapter: ClientAdapter {
             return nil
         }
         return value
+    }
+
+    private static func managedProviderRange(in lines: [String]) -> ClosedRange<Int>? {
+        let beginIndices = lines.indices.filter {
+            $0 < lines.endIndex &&
+                lines[$0].trimmingCharacters(in: .whitespacesAndNewlines)
+                    == CodexConfigProjector.providersBeginMarker
+        }
+        let endIndices = lines.indices.filter {
+            $0 < lines.endIndex &&
+                lines[$0].trimmingCharacters(in: .whitespacesAndNewlines)
+                    == CodexConfigProjector.providersEndMarker
+        }
+        guard
+            beginIndices.count == 1,
+            endIndices.count == 1,
+            let begin = beginIndices.first,
+            let end = endIndices.first,
+            begin < end
+        else {
+            return nil
+        }
+        return begin...end
     }
 
     private static func stringAssignment(named expectedKey: String, in lines: [String]) -> String? {
@@ -1273,6 +1480,7 @@ private struct ConfigurationSnapshot {
 private struct PreservedSessionBridgeConfiguration {
     let profileID: UUID
     let route: ProviderRoute
+    let capabilityToken: String?
 }
 
 private struct FileSnapshot {

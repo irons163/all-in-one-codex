@@ -47,6 +47,12 @@ The release workflow validates that the tag and project version agree. For a
 prerelease tag such as `v1.0.0-rc.1`, the base version must match
 `MARKETING_VERSION`.
 
+For supply-chain and workflow safety, the workflow pins third-party Actions to
+immutable commit SHAs, validates release tags as semantic versions before
+loading signing secrets or performing an upload, and only permits manual
+signing runs from `main`. GitHub Actions dependency updates are tracked weekly
+by `.github/dependabot.yml`.
+
 The workflow can also be started manually with `workflow_dispatch`. Manual runs
 produce downloadable Actions artifacts but do not attach files to a GitHub
 Release. The `stable`/`dev` channel controls the DMG filename suffix; it does

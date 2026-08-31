@@ -2793,6 +2793,54 @@ final class CodexCoreTests: XCTestCase {
         XCTAssertTrue(projected.contains("[mcp_servers.example]"))
     }
 
+    func testSecureBridgeProjectionUsesCapabilityURLAndNonSecretAuthCommand() throws {
+        let token = String(repeating: "a", count: OpenCodeGoBridgeCapability.tokenLength)
+        XCTAssertTrue(OpenCodeGoBridgeCapability.isValid(token))
+        XCTAssertEqual(
+            OpenCodeGoBridgeCapability.token(
+                fromBaseURL: "\(ProviderCatalog.openCodeGoBridgeBaseURL)/\(token)"
+            ),
+            token
+        )
+        XCTAssertNil(
+            OpenCodeGoBridgeCapability.token(
+                fromBaseURL: "http://attacker@127.0.0.1:14556/v1/\(token)"
+            )
+        )
+        XCTAssertEqual(
+            OpenCodeGoBridgeCapability.strippedRequestPath(
+                "/v1/\(token)/responses",
+                token: token
+            ),
+            "/responses"
+        )
+        XCTAssertNil(
+            OpenCodeGoBridgeCapability.strippedRequestPath(
+                "/v1/\(String(repeating: "b", count: OpenCodeGoBridgeCapability.tokenLength))/responses",
+                token: token
+            )
+        )
+
+        let profile = makeProfile(
+            presetID: .openCodeGo,
+            model: "glm-5.2",
+            preserveSessions: false
+        )
+        let projected = try CodexConfigProjector().project(
+            original: "approval_policy = \"never\"\n",
+            profile: profile,
+            bridgeCapabilityToken: token
+        )
+        XCTAssertTrue(
+            projected.contains(
+                "base_url = \"\(ProviderCatalog.openCodeGoBridgeBaseURL)/\(token)\""
+            )
+        )
+        XCTAssertTrue(projected.contains(CodexConfigProjector.bridgeCapabilityTokenMarkerPrefix + token))
+        XCTAssertTrue(projected.contains("command = \"/bin/echo\""))
+        XCTAssertTrue(projected.contains("args = [\"\(token)\"]"))
+    }
+
     func testPreserveProjectionCanReturnToCustomProviderAndRejectsForeignOpenAIBaseURL() throws {
         let preserveProfile = makeProfile(
             presetID: .openCodeGo,
@@ -3428,6 +3476,13 @@ final class CodexCoreTests: XCTestCase {
         }
 
         XCTAssertTrue(OpenCodeGoBridgeSocketOptions.configureNoSigPipe(on: descriptors[0]))
+        XCTAssertTrue(
+            OpenCodeGoBridgeSocketOptions.configureIOTimeouts(
+                on: descriptors[0],
+                receiveTimeout: 1,
+                sendTimeout: 2
+            )
+        )
         var enabled: Int32 = 0
         var optionLength = socklen_t(MemoryLayout<Int32>.size)
         let inspected = withUnsafeMutablePointer(to: &enabled) { pointer in

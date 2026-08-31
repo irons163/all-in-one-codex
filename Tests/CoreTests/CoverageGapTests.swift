@@ -649,6 +649,46 @@ final class CoverageGapTests: XCTestCase {
         }
     }
 
+    func testCapabilityAuthenticatedBridgeRequiresCurrentURLToken() async throws {
+        let bridge = OpenCodeGoBridgeManager(
+            port: 0,
+            transport: StubBridgeTransport(
+                response: OpenCodeGoBridgeTransportResponse(
+                    statusCode: 200,
+                    headers: ["content-type": "application/json"],
+                    body: Data("{}".utf8)
+                )
+            )
+        )
+        let token = String(repeating: "c", count: OpenCodeGoBridgeCapability.tokenLength)
+        bridge.configureLegacyChatMode(
+            credential: Data("selected-key".utf8),
+            capabilityToken: token
+        )
+        try bridge.ensureRunning()
+        defer { bridge.stop() }
+
+        let port = try XCTUnwrap(bridge.localPort)
+        let base = "http://127.0.0.1:\(port)"
+
+        let (missingBody, missingResponse) = try await URLSession.shared.data(
+            from: try XCTUnwrap(URL(string: "\(base)/health"))
+        )
+        XCTAssertEqual((missingResponse as? HTTPURLResponse)?.statusCode, 401)
+        XCTAssertTrue(String(decoding: missingBody, as: UTF8.self).contains("missing_authorization"))
+
+        let wrongToken = String(repeating: "d", count: OpenCodeGoBridgeCapability.tokenLength)
+        let (_, wrongResponse) = try await URLSession.shared.data(
+            from: try XCTUnwrap(URL(string: "\(base)/v1/\(wrongToken)/health"))
+        )
+        XCTAssertEqual((wrongResponse as? HTTPURLResponse)?.statusCode, 401)
+
+        let (_, validResponse) = try await URLSession.shared.data(
+            from: try XCTUnwrap(URL(string: "\(base)/v1/\(token)/health"))
+        )
+        XCTAssertEqual((validResponse as? HTTPURLResponse)?.statusCode, 200)
+    }
+
     func testPreserveResponsesLoopbackNormalizesUpstreamRejection() async throws {
         let transport = StubBridgeTransport(
             response: OpenCodeGoBridgeTransportResponse(

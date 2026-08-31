@@ -25,10 +25,119 @@ public extension OpenCodeGoBridgeManaging {
 /// loopback manager can retain the in-memory Keychain value.
 protocol OpenCodeGoBridgeConfiguring: AnyObject {
     func configureLegacyChatMode()
+    func configureLegacyChatMode(
+        credential: Data,
+        capabilityToken: String
+    )
     func configurePreservingSessions(
         route: ProviderRoute,
         credential: Data
     )
+    func configurePreservingSessions(
+        route: ProviderRoute,
+        credential: Data,
+        capabilityToken: String
+    )
+}
+
+/// Marker adopted by the production manager once it can enforce URL
+/// capabilities. Alternate managers may keep the legacy compatibility
+/// contract without accidentally receiving credentials they cannot protect.
+protocol OpenCodeGoBridgeCapabilityConfiguring: OpenCodeGoBridgeConfiguring {}
+
+extension OpenCodeGoBridgeConfiguring {
+    /// Compatibility defaults keep alternate/test bridge managers source
+    /// compatible. The production manager overrides these with capability
+    /// authenticated routing; older managers continue to use their legacy
+    /// behavior until the configuration is applied again.
+    func configureLegacyChatMode(
+        credential: Data,
+        capabilityToken: String
+    ) {
+        configureLegacyChatMode()
+    }
+
+    func configurePreservingSessions(
+        route: ProviderRoute,
+        credential: Data,
+        capabilityToken: String
+    ) {
+        configurePreservingSessions(route: route, credential: credential)
+    }
+}
+
+/// A per-apply, high-entropy capability embedded in the loopback URL. It
+/// prevents unrelated local processes from invoking the bridge merely because
+/// they can reach 127.0.0.1:14556. The credential itself remains in Keychain
+/// and bridge memory; this token is only a routing capability.
+enum OpenCodeGoBridgeCapability {
+    static let tokenByteCount = 32
+    static let tokenLength = tokenByteCount * 2
+
+    static func generate() -> String {
+        (0..<tokenByteCount)
+            .map { _ in String(format: "%02x", UInt8.random(in: 0...UInt8.max)) }
+            .joined()
+    }
+
+    static func isValid(_ token: String) -> Bool {
+        token.utf8.count == tokenLength &&
+            token.unicodeScalars.allSatisfy { scalar in
+                switch scalar.value {
+                case 48...57, 97...102:
+                    return true
+                default:
+                    return false
+                }
+            }
+    }
+
+    static func baseURL(for token: String) -> String? {
+        guard isValid(token) else {
+            return nil
+        }
+        return "\(ProviderCatalog.openCodeGoBridgeBaseURL)/\(token)"
+    }
+
+    /// Removes the capability path prefix and returns the bridge-relative
+    /// route (for example `/v1/<token>/responses` → `/responses`).
+    static func strippedRequestPath(_ path: String, token: String) -> String? {
+        guard isValid(token) else {
+            return nil
+        }
+        let prefix = "/v1/\(token)"
+        guard path == prefix || path.hasPrefix(prefix + "/") else {
+            return nil
+        }
+        let remainder = String(path.dropFirst(prefix.count))
+        return remainder.isEmpty ? "/" : remainder
+    }
+
+    /// Extracts a capability from a projector-owned bridge URL. Foreign hosts,
+    /// ports, schemes, query strings, and malformed tokens are rejected.
+    static func token(fromBaseURL value: String) -> String? {
+        guard let components = URLComponents(string: value),
+              components.scheme == "http",
+              components.host == "127.0.0.1",
+              components.port == Int(OpenCodeGoBridgeManager.port),
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil
+        else {
+            return nil
+        }
+        let parts = components.path.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count == 2,
+              parts[0] == "v1",
+              let token = parts.last.map(String.init),
+              isValid(token),
+              components.path == "/v1/\(token)"
+        else {
+            return nil
+        }
+        return token
+    }
 }
 
 /// Errors are deliberately generic so neither bearer credentials nor upstream

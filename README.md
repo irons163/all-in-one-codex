@@ -183,6 +183,14 @@ Keychain 取得，且不會把傳入的官方 OAuth bearer 送往第三方。這
 - bridge 僅監聽 `127.0.0.1:14556`，不接受 LAN 或公開網路連線。credential
   只在 active route 的記憶體中使用，不會被 bridge 寫入檔案、永久保存或寫入 log；Preview、warning、Apply、Undo
   的 UI 訊息也不顯示 key。
+- 每次 Apply 會為需要 local bridge 的 route 產生新的 256-bit capability，並把它
+  放在只接受本機的 URL path；bridge 只會處理帶有目前 capability 的請求。一般
+  provider 的 API key 不會再出現在 bridge provider 的 `auth.command`，而是由
+  bridge 從 Keychain 取出後在記憶體中注入 upstream。舊版產生的固定
+  `http://127.0.0.1:14556/v1` 設定仍保留相容性；請重新 Apply 一次以啟用
+  capability 保護。
+- bridge 對同時連線數設有上限，並對 socket、HTTP header、request body 與診斷
+  log 設定大小／時間上限，避免本機程式用慢速連線耗盡 app 資源。
 - 設定切換不修改 `~/.codex/auth.json`。Chat-only route 與 session 保留模式的
   上游轉送是明確的 local bridge network path，不是假設 app 完全不會發生
   network call。

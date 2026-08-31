@@ -158,10 +158,7 @@ public actor SwitchReceiptRepository {
             return []
         }
 
-        guard
-            let data = try? Data(contentsOf: storageURL),
-            data.count <= Self.maximumJournalBytes
-        else {
+        guard let data = boundedJournalData(from: storageURL) else {
             return []
         }
 
@@ -182,6 +179,32 @@ public actor SwitchReceiptRepository {
             }
         }
         return []
+    }
+
+    private func boundedJournalData(from url: URL) -> Data? {
+        guard
+            let values = try? url.resourceValues(
+                forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+            ),
+            values.isRegularFile == true,
+            values.isSymbolicLink != true,
+            let size = values.fileSize,
+            size <= Int64(Self.maximumJournalBytes)
+        else {
+            return nil
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        let data: Data
+        do {
+            data = try handle.read(upToCount: Self.maximumJournalBytes + 1) ?? Data()
+        } catch {
+            return nil
+        }
+        guard data.count <= Self.maximumJournalBytes else { return nil }
+        return data
     }
 
     private func normalizedEntries(

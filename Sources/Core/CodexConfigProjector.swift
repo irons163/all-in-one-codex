@@ -82,11 +82,25 @@ public struct CodexConfigProjector: Sendable {
     public static let compatibilityEndMarker = "# END ALL-IN-ONE-CODEX COMPATIBILITY"
     public static let providersBeginMarker = "# BEGIN ALL-IN-ONE-CODEX PROVIDERS"
     public static let providersEndMarker = "# END ALL-IN-ONE-CODEX PROVIDERS"
+    public static let bridgeProfileIDMarkerPrefix = "# ALL-IN-ONE-CODEX BRIDGE PROFILE ID: "
+    public static let bridgeCapabilityTokenMarkerPrefix = "# ALL-IN-ONE-CODEX BRIDGE CAPABILITY TOKEN: "
 
     public init() {}
 
     /// Replaces only the app-owned regions while retaining all unrelated TOML text.
     public func project(original: String, profile: ProviderProfile) throws -> String {
+        try project(original: original, profile: profile, bridgeCapabilityToken: nil)
+    }
+
+    /// Projects a configuration with an optional loopback capability. A token
+    /// is supplied only when a profile routes through the local bridge; review
+    /// previews deliberately omit it so secrets/capabilities never appear in
+    /// UI diff text.
+    public func project(
+        original: String,
+        profile: ProviderProfile,
+        bridgeCapabilityToken: String?
+    ) throws -> String {
         guard
             ProviderCatalog.preset(for: profile.presetID) != nil,
             !profile.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -94,6 +108,17 @@ public struct CodexConfigProjector: Sendable {
             throw CodexSwitchError.invalidProfile
         }
         let route = try ProviderCatalog.route(for: profile)
+        if let bridgeCapabilityToken,
+           !OpenCodeGoBridgeCapability.isValid(bridgeCapabilityToken)
+        {
+            throw CodexSwitchError.invalidProfile
+        }
+        let effectiveCapabilityToken: String?
+        if profile.preserveSessions || route.requiresLoopbackBridge {
+            effectiveCapabilityToken = bridgeCapabilityToken
+        } else {
+            effectiveCapabilityToken = nil
+        }
 
         let lineEnding = original.contains("\r\n") ? "\r\n" : "\n"
         let originalLines = Self.lines(from: original)
@@ -145,7 +170,11 @@ public struct CodexConfigProjector: Sendable {
         }
         lines = Self.removingTopLevelActiveAssignments(from: lines)
 
-        let activeBlock = Self.activeBlock(profile: profile, route: route)
+        let activeBlock = Self.activeBlock(
+            profile: profile,
+            route: route,
+            bridgeCapabilityToken: effectiveCapabilityToken
+        )
         if let firstTable = Self.firstTableIndex(in: lines) {
             lines.insert(contentsOf: activeBlock + [""], at: firstTable)
         } else {
@@ -166,7 +195,12 @@ public struct CodexConfigProjector: Sendable {
             if !lines.isEmpty, lines.last?.isEmpty == false {
                 lines.append("")
             }
-            lines.append(contentsOf: Self.providersBlock(profileID: profile.id))
+            lines.append(
+                contentsOf: Self.providersBlock(
+                    profileID: profile.id,
+                    bridgeCapabilityToken: effectiveCapabilityToken
+                )
+            )
         }
 
         return lines.joined(separator: lineEnding) + lineEnding
@@ -441,7 +475,11 @@ public struct CodexConfigProjector: Sendable {
         return nil
     }
 
-    private static func activeBlock(profile: ProviderProfile, route: ProviderRoute) -> [String] {
+    private static func activeBlock(
+        profile: ProviderProfile,
+        route: ProviderRoute,
+        bridgeCapabilityToken: String?
+    ) -> [String] {
         var lines = [
             activeBeginMarker,
             "model = \(tomlString(profile.model))"
@@ -453,7 +491,9 @@ public struct CodexConfigProjector: Sendable {
             // the selected non-secret route after a full restart.
             lines.append(preserveSessionsMarker)
             lines.append(openAIBaseURLMarker)
-            lines.append("openai_base_url = \(tomlString(ProviderCatalog.openCodeGoBridgeBaseURL))")
+            let bridgeURL = bridgeCapabilityToken.flatMap(OpenCodeGoBridgeCapability.baseURL)
+                ?? ProviderCatalog.openCodeGoBridgeBaseURL
+            lines.append("openai_base_url = \(tomlString(bridgeURL))")
             lines.append("\(preserveProfileIDMarkerPrefix)\(profile.id.uuidString)")
             lines.append("\(preservePresetMarkerPrefix)\(profile.presetID.rawValue)")
         } else {
@@ -485,7 +525,9 @@ public struct CodexConfigProjector: Sendable {
             activeRange.contains(assignments[0].index),
             lines[activeRange].contains(where: {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines) == openAIBaseURLMarker
-            })
+            }),
+            assignments[0].value == ProviderCatalog.openCodeGoBridgeBaseURL ||
+                (assignments[0].value.flatMap(OpenCodeGoBridgeCapability.token(fromBaseURL:)) != nil)
         else {
             throw CodexSwitchError.foreignOpenAIBaseURL
         }
@@ -581,11 +623,20 @@ public struct CodexConfigProjector: Sendable {
         return String(trimmed.dropFirst().dropLast())
     }
 
-    private static func providersBlock(profileID: UUID) -> [String] {
+    private static func providersBlock(
+        profileID: UUID,
+        bridgeCapabilityToken: String?
+    ) -> [String] {
         let account = tomlString(profileID.uuidString)
         let service = tomlString(KeychainCredentialStore.service)
 
         var lines = [providersBeginMarker]
+        if let bridgeCapabilityToken,
+           OpenCodeGoBridgeCapability.isValid(bridgeCapabilityToken)
+        {
+            lines.append("\(bridgeProfileIDMarkerPrefix)\(profileID.uuidString)")
+            lines.append("\(bridgeCapabilityTokenMarkerPrefix)\(bridgeCapabilityToken)")
+        }
         for (index, provider) in managedProviders.enumerated() {
             if index > 0 {
                 lines.append("")
@@ -594,14 +645,26 @@ public struct CodexConfigProjector: Sendable {
             let tableID = provider.id
             lines.append("[model_providers.\(tableID)]")
             lines.append("name = \(tomlString(provider.displayName))")
-            lines.append("base_url = \(tomlString(provider.baseURL))")
+            let baseURL = provider.id == ProviderCatalog.openCodeGoBridgeProviderID
+                ? bridgeCapabilityToken.flatMap(OpenCodeGoBridgeCapability.baseURL) ?? provider.baseURL
+                : provider.baseURL
+            lines.append("base_url = \(tomlString(baseURL))")
             lines.append("wire_api = \(tomlString(provider.wireAPI.rawValue))")
             lines.append("")
             lines.append("[model_providers.\(tableID).auth]")
-            lines.append("command = \"/usr/bin/security\"")
-            lines.append(
-                "args = [\"find-generic-password\", \"-s\", \(service), \"-a\", \(account), \"-w\"]"
-            )
+            if provider.id == ProviderCatalog.openCodeGoBridgeProviderID,
+               bridgeCapabilityToken != nil
+            {
+                // The token authenticates the loopback capability. The bridge
+                // injects the selected Keychain credential upstream in memory.
+                lines.append("command = \"/bin/echo\"")
+                lines.append("args = [\(tomlString(bridgeCapabilityToken ?? ""))]")
+            } else {
+                lines.append("command = \"/usr/bin/security\"")
+                lines.append(
+                    "args = [\"find-generic-password\", \"-s\", \(service), \"-a\", \(account), \"-w\"]"
+                )
+            }
             lines.append("timeout_ms = 5000")
             lines.append("refresh_interval_ms = 0")
         }
