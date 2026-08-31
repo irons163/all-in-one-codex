@@ -112,12 +112,21 @@ enum AppLanguage: String, CaseIterable, Sendable {
 
     /// The best supported language for the current system locale. When the
     /// system language is not in the supported list this is `.english`.
+    ///
+    /// `Bundle.preferredLocalizations` can return the development language for
+    /// a standalone app even when macOS is using a supported script variant
+    /// (for example `zh-TW`/`zh-Hant`). Resolve the user's preferred locale
+    /// directly so the first launch uses the same language as the system.
     static var current: AppLanguage {
-        let supported = Set(allCases.map(\.rawValue))
-        let preferred = Bundle.main.preferredLocalizations.first {
-            supported.contains($0)
+        for preferredLanguage in Locale.preferredLanguages {
+            let locale = Locale(identifier: preferredLanguage)
+            let resolved = resolve(from: locale)
+            let languageCode = locale.language.languageCode?.identifier.lowercased()
+            if resolved != .english || languageCode == "en" {
+                return resolved
+            }
         }
-        return preferred.flatMap(AppLanguage.init(rawValue:)) ?? .english
+        return resolve(from: Locale.current)
     }
 }
 

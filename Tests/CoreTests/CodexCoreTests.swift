@@ -8,6 +8,7 @@ final class CodexCoreTests: XCTestCase {
     func testAppLanguageResolvesSupportedLocalesAndFallsBackToEnglish() {
         XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "en_US")), .english)
         XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "zh_TW")), .traditionalChinese)
+        XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "zh-Hant-TW")), .traditionalChinese)
         XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "zh_CN")), .simplifiedChinese)
         XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "fr_FR")), .french)
         XCTAssertEqual(AppLanguage.resolve(from: Locale(identifier: "es_ES")), .spanish)
@@ -42,7 +43,7 @@ final class CodexCoreTests: XCTestCase {
         )
         XCTAssertEqual(
             AppLanguage.traditionalChinese.localizedString(forKey: "僅目前 model"),
-            "僅目前 model"
+            "僅目前模型"
         )
         XCTAssertEqual(
             AppLanguage.simplifiedChinese.localizedString(forKey: "僅目前 model"),
@@ -72,6 +73,40 @@ final class CodexCoreTests: XCTestCase {
             AppLanguage.english.localizedString(forKey: "a-key-that-does-not-exist"),
             "a-key-that-does-not-exist"
         )
+    }
+
+    func testChineseEditorLabelsDoNotFallBackToEnglish() {
+        let keys = [
+            "Profiles",
+            "Profile",
+            "Provider",
+            "Model",
+            "Route",
+            "Bridge",
+            "Endpoint",
+            "Loopback",
+            "Upstream",
+            "Codex model catalog",
+            "Credentials",
+            "Undo journal",
+            "Config backup restore",
+            "保留既有 Codex sessions",
+            "Chat-only model 由本機 bridge 轉換 Responses ↔ Chat Completions；Apply 會自動啟動 bridge，使用期間請保持 All-in-One Codex 開啟。",
+            "Apply 後 Codex App/CLI 不會熱載入 catalog；請完全退出並重新啟動。保留模式可再開啟既有 task。",
+            "只接受新的 API key；儲存成功後欄位會清空。既有 key 不會讀出或顯示。"
+        ]
+
+        for language in [AppLanguage.traditionalChinese, .simplifiedChinese] {
+            for key in keys {
+                let localized = language.localizedString(forKey: key)
+                XCTAssertFalse(localized.isEmpty, "Missing translation for \(language.rawValue): \(key)")
+                XCTAssertNotEqual(
+                    localized,
+                    AppLanguage.english.localizedString(forKey: key),
+                    "Chinese translation unexpectedly matches English for \(key)"
+                )
+            }
+        }
     }
 
     func testProviderCatalogContainsRequiredPresets() throws {
