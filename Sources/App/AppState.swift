@@ -983,7 +983,8 @@ final class AppState: ObservableObject {
         let firstPreset = presetOptions.first
         return ProfileDraft(
             presetKey: firstPreset?.id ?? "",
-            model: firstPreset?.defaultModel ?? ""
+            model: firstPreset?.defaultModel ?? "",
+            preserveSessions: true
         )
     }
 

@@ -102,6 +102,7 @@ final class AppCoverageTests: XCTestCase {
         state.beginCreatingProfile()
         XCTAssertTrue(state.isCreatingProfile)
         XCTAssertTrue(state.isShowingNewProfile)
+        XCTAssertTrue(state.editorDraft.preserveSessions)
         state.editorDraft.name = "   "
         _ = await state.saveEditor()
         XCTAssertNotNil(state.errorMessage)

@@ -290,9 +290,9 @@ public struct ProviderProfile: Identifiable, Codable, Hashable, Sendable {
     public var name: String
     public var presetID: ProviderPresetID
     public var model: String
-    /// Opt-in only. When enabled the app leaves Codex on its OpenAI provider
-    /// identity and routes requests through the authenticated local bridge so
-    /// existing Codex session history can remain associated with that identity.
+    /// When enabled the app leaves Codex on its OpenAI provider identity and
+    /// routes requests through the authenticated local bridge so existing
+    /// Codex session history can remain associated with that identity.
     public var preserveSessions: Bool
     public var catalogScope: CodexModelCatalogScope
     public let createdAt: Date
